@@ -1,2 +1,29 @@
-# TES3-WNAM-Falsifier
-A tool for manually creating TES3 global maps.
+# TES3 WNAM Falsifier
+
+This is a Python script for directly editing the 9x9 heightmaps (WNAM) of landscape records (LAND) in Morrowind plugins. This allows for customizing the global map.
+
+```
+Usage: WNAMtool.py --extract -i [input plugin path] -b [bmp output dir]
+                   --repack  -i [input plugin path] -b [bmp image path] -o [output plugin path]
+```
+
+## Extracting
+You can extract the heightmaps for each landscape record in a given plugin as a composite BMP image.
+
+To do this, you need to provide the path of the plugin you're extracting from, as well as the directory that the image will be saved in.
+
+The name of this image will determine its positioning on the global map when repacking, so you shouldn't change it.
+
+## Repacking
+You can convert an extracted BMP image into a new plugin that will modify the heightmaps of changed cells.
+
+To do this, you need to provide the path of the plugin the image was originally created from, the destination path for the new plugin, and the path of the image.
+
+Note that heightmaps can only be extracted from 8bpp paletted BMPs. After editing the image, you must save it in that format. Paint.NET and GIMP work for this.
+
+The original plugin is needed because it is impossible to only change the heightmap with a plugin. Other things like actual land geometry, texturing, and vertex colors are included in the LAND record as well. Land records will only be included for cells that have actually been changed in the provided image, but every land texture record from the original plugin will be included as well.
+
+
+
+#### Credits
+Author - Qlonever
