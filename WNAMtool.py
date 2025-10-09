@@ -72,40 +72,62 @@ class ColorTable(Data):
             i *= 4
             v.append(list(b[i:i+4]))
         return v
-    
-class PixelArray(Data):
+
+# Keep this as bytes so we don't use gigabytes of memory 
+class PixelArray():
 
     def getSize(self):
-        self.size = self.height * (self.padWidth)
+        self.size = self.height * self.padWidth
 
-    def to_bytes(self):
+    def to_bytes(self, v):
         b = bytearray()
-        for row in self.value:
+        for row in v:
             b += bytearray(row) + bytearray(self.padWidth - self.width)
         return b
 
-    def from_bytes(self, b):
+    def from_bytes(self):
         v = []
         for i in range(self.height):
             i *= self.padWidth
-            v.append(list(b[i:i + self.width]))
+            v.append(list(self.value[i:i + self.width]))
         return v
+
+    def getRow(self, x, y, length):
+        if not length:
+            x = 0
+            length = self.width
+        baseRow = y * self.padWidth
+        baseColumn = baseRow + x
+        return self.value[baseColumn:baseColumn+length]
+
+    def setRow(self, x, y, b):
+        b = b[:self.width - x]
+        baseRow = y * self.padWidth
+        baseColumn = baseRow + x
+        self.value[baseColumn:baseColumn+len(b)] = b
 
     def impose(self, pixelArray, x, y):
         for h in range(pixelArray.height):
-            self.value[y+h][x:x+pixelArray.width] = pixelArray.value[h]
-        
+            b = pixelArray.getRow(0, h, 0)
+            self.setRow(x, y + h, b)
+
     def crop(self, x, y, width, height):
         cropped = []
         for h in range(height):
-            cropped.append(self.value[y+h][x:x+width])
+            cropped.append(self.getRow(x, y + h, width))
         return PixelArray(cropped, width, height, width)
 
     def __init__(self, i, width, height, padWidth):
         self.width = int(width)
         self.height = int(height)
         self.padWidth = int(padWidth)
-        Data.__init__(self, i)
+        if not(type(i) == bytearray or type(i) == bytes):
+            if not hasattr(self, 'size'):
+                self.getSize()
+            self.value = self.to_bytes(i)
+        else:
+            self.size = len(i)
+            self.value = i
 
 def padLength(length, pad):
     return int(pad * math.ceil(length/pad))
@@ -160,7 +182,7 @@ def parseHeader(b):
         read += size
 
 def WNAMsFromBMP(bmpPath, coords):
-    pixelArray = []
+    pixelArray = None
     with open(bmpPath, mode='rb') as img:
         if parseHeader(img.read(0x36)) == False:
             return False
@@ -197,7 +219,7 @@ def WNAMsFromBMP(bmpPath, coords):
     for x in range(cellWidth):
         for y in range(cellHeight):
             key = str(coords[0]+x) + ',' + str(coords[1]+y)
-            WNAMs[key] = pixelArray.crop(x*9,y*9,9,9).to_bytes()
+            WNAMs[key] = pixelArray.crop(x*9,y*9,9,9).value
 
     return WNAMs
 
@@ -218,10 +240,20 @@ def BMPFromPixelArray(bmpPath, pixelArray, unsigned):
         b += itemClass(value).to_bytes()
     palette = createPalette(unsigned)
     b += ColorTable(palette).to_bytes()
-    b += pixelArray.to_bytes()
+    b += pixelArray.value
     with open(bmpPath, mode='wb') as img:
         img.write(b)
-        
+
+defaultLAND = {
+    'type':'LAND',
+    'subrecords':{
+        'INTV':Int32(0).to_bytes() * 2,
+        'DATA':Uint32(1).to_bytes(),
+        'VNML':bytearray([0, 0, 127] * 4225),
+        'VHGT':bytearray(b'\x00\x00\x80\xC3') + bytes(4228),
+        'WNAM':bytearray([128]*81)
+    }
+}
 
 def parseRecord(b, recordType):
     record = {'type':recordType, 'subrecords':{}}
@@ -252,8 +284,15 @@ def landRecordsFromPlugin(pluginPath):
                 y = Int32(b[12:16]).value
                 key = str(x) + ',' + str(y)
                 record = parseRecord(b, 'LAND')
-                if 'WNAM' in record['subrecords']:
-                    records['LAND'][key] = record
+                if not ('WNAM' in record['subrecords']):
+                    flag = Uint32(record['subrecords']['DATA'])
+                    flag.value = flag.value | 1
+                    record['subrecords']['DATA'] = flag.to_bytes()
+                    record['subrecords']['VNML'] = defaultLAND['subrecords']['VNML']
+                    record['subrecords']['VHGT'] = defaultLAND['subrecords']['VHGT']
+                    record['subrecords']['WNAM'] = defaultLAND['subrecords']['WNAM']
+                    
+                records['LAND'][key] = record
             elif recordType == 'LTEX':
                 b = f.read(recordSize)
                 records['LTEX'].append(parseRecord(b, 'LTEX'))
@@ -264,6 +303,9 @@ def landRecordsFromPlugin(pluginPath):
 
 def pluginToBMP(pluginPath, bmpDir, unsigned=True):
     records = landRecordsFromPlugin(pluginPath)['LAND']
+    if len(records) <= 0:
+        print('Plugin does not contain any valid LAND records.')
+        return
     # I hope nobody ever makes landmasses 100000 cells away from Vvardenfell
     left = 100000
     right = -100000
@@ -320,8 +362,9 @@ def BMPToPlugin(masterPath, bmpPath, pluginPath):
                 newRecord = oldLandRecord
                 newRecord['subrecords']['WNAM'] = imageWNAM
                 newLandRecords[coords] = newRecord
-
-    if len(newLandRecords) > 0:    
+    if len(newLandRecords) <= 0:
+        print('The heightmap was not altered. No plugin will be generated.')
+    else:    
         masterSize = os.path.getsize(masterPath)
         masterName = masterPath.split('/')[-1]
         masterRecordSize = 0
@@ -329,15 +372,6 @@ def BMPToPlugin(masterPath, bmpPath, pluginPath):
             masterName = ''
         else:
             masterRecordSize = 0x19 + len(masterName)
-        b = bytearray()
-        b += String('TES3').to_bytes()
-        b += Uint32(0x1A5 + masterRecordSize).to_bytes()
-        b += bytes(8)
-        b += String('HEDR').to_bytes()
-        b += Uint32(0x12C).to_bytes()
-        b += bytes([0x66, 0x66, 0xA6, 0x3F])
-        b += bytes(0x124)
-        b += Uint32(len(newLandRecords) + len(textureRecords)).to_bytes()
 
         def writeMaster(name, size):
             master = bytearray()
@@ -349,13 +383,6 @@ def BMPToPlugin(masterPath, bmpPath, pluginPath):
             master += Uint32(0x8).to_bytes()
             master += Uint64(size).to_bytes()
             return master
-
-        b += writeMaster('Morrowind.esm', 79837557)
-        b += writeMaster('Tribunal.esm', 4565686)
-        b += writeMaster('Bloodmoon.esm', 9631798)
-
-        if len(masterName) > 0:
-            b += writeMaster(masterName, masterSize)
 
         def writeRecord(record):
             recordSize = 0
@@ -370,15 +397,29 @@ def BMPToPlugin(masterPath, bmpPath, pluginPath):
                 recordBytes += subrecord
             recordBytes[4:8] = Uint32(recordSize).to_bytes()
             return recordBytes
-        
-        for coords in newLandRecords:
-            record = newLandRecords[coords]
-            b += writeRecord(record)
-        for record in textureRecords:
-            b += writeRecord(record)
-            
+
         with open(pluginPath, mode='wb') as f:
-            f.write(b)
+            f.write(String('TES3').to_bytes())
+            f.write(Uint32(0x1A5 + masterRecordSize).to_bytes())
+            f.write(bytes(8))
+            f.write(String('HEDR').to_bytes())
+            f.write(Uint32(0x12C).to_bytes())
+            f.write(bytes([0x66, 0x66, 0xA6, 0x3F]))
+            f.write(bytes(0x124))
+            f.write(Uint32(len(newLandRecords) + len(textureRecords)).to_bytes())
+
+            f.write(writeMaster('Morrowind.esm', 79837557))
+            f.write(writeMaster('Tribunal.esm', 4565686))
+            f.write(writeMaster('Bloodmoon.esm', 9631798))
+
+            if len(masterName) > 0:
+                f.write(writeMaster(masterName, masterSize))
+            
+            for coords in newLandRecords:
+                f.write(writeRecord(newLandRecords[coords]))
+            for record in textureRecords:
+                f.write(writeRecord(record))
+
         print('Created new plugin at "' + pluginPath + '"')
             
 def verifyPath(path):
