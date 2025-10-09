@@ -189,7 +189,9 @@ def WNAMsFromBMP(bmpPath, coords):
     for x in range(cellWidth):
         for y in range(cellHeight):
             key = str(coords[0]+x) + ',' + str(coords[1]+y)
-            WNAMs[key] = pixelArray.crop(x*9,y*9,9,9).value
+            data = pixelArray.crop(x*9,y*9,9,9).value
+            subrecord = {'type':'WNAM', 'data':data}
+            WNAMs[key] = subrecord
 
     return WNAMs
 
@@ -216,56 +218,120 @@ def BMPFromPixelArray(bmpPath, pixelArray, unsigned):
 
 defaultLAND = {
     'type':'LAND',
-    'subrecords':{
-        'INTV':pack('<2i', 0, 0),
-        'DATA':pack('<I', 1),
-        'VNML':pack('>3b', 0, 0, 127) * 4225,
-        'VHGT':pack('<f426725b3x', -256, *bytes(426725)),
-        'WNAM':pack('81x')
-    }
+    'flags':pack('<I', 0),
+    'subrecords':[
+        {'type':'INTV', 'data':pack('<2i', 0, 0)},
+        {'type':'DATA', 'data':pack('<I', 1)},
+        {'type':'VNML', 'data':pack('>3b', 0, 0, 127) * 4225},
+        {'type':'VHGT', 'data':pack('<f4225b3x', -256, *bytes(4225))},
+        {'type':'WNAM', 'data':pack('<81b', *([-128] * 81))}
+    ]
 }
 
-def parseRecord(b, recordType):
-    record = {'type':recordType, 'subrecords':{}}
+# Record structure:
+#{
+#    'type': 4 character string,
+#    'flags': int containing bit flags,
+#    'subrecords': [
+#        subrecord,
+#        ...
+#    ]
+#}
+#
+# Subrecord structure:
+#
+#{
+#    'type': 4 character string,
+#    'data': byte data of subrecord
+#}
+
+def packSubrecord(subrecord):
+    data = subrecord['data']
+    size = len(data)
+    b = pack('<4sI', subrecord['type'], size)
+    b += data
+    return b
+
+def packRecord(record):
+    recordSize = 0
+    recordInfo = pack('<4s8xI', record['type'], record['flags'])
+    b = bytearray()
+    for subrecord in record['subrecords']:
+        b += packSubrecord(subrecord)
+    recordInfo[4:8] = pack('<I', len(b))
+    b = recordInfo + b
+    return b
+
+def subrecordsByType(record):
+    subrecords = {}
+    for subrecord in record['subrecords']:
+        if not subrecord['type'] in subrecords:
+            subrecords[subrecord['type']] = []
+        subrecords[subrecord['type']].append(subrecord['data'])
+    return subrecords
+
+def replaceSubrecord(record, rep, n=1):
+    num = 0
+    for i in range(len(record['subrecords'])):
+        subrecord = record['subrecords'][i]
+        if subrecord['type'] == rep['type']:
+            num += 1
+            if num == n:
+                record['subrecords'][i] = rep
+                return record
+    record['subrecords'].append(rep)
+    return record
+
+def parseRecord(b, recordType, flags):
+    record = {'type':recordType, 'flags':flags, 'subrecords':[]}
     offset = 0
     while offset < len(b):
         subtype, size = unpack('<4sI', b[offset:offset+8])
         offset += 8
-        record['subrecords'][subtype] = b[offset:offset+size]
+        subrecord = {'type':subtype, 'data':b[offset:offset+size]}
         offset += size
+        record['subrecords'].append(subrecord)
     return record
 
-def landRecordsFromPlugin(pluginPath):
-    records = {'LAND':{}, 'LTEX':[]}
+def recordsFromPlugin(pluginPath, recordTypes):
+    records = {}
     fileSize = os.path.getsize(pluginPath)
     with open(pluginPath, mode='rb') as f:
         offset = 0
         while offset < fileSize:
             recordType, recordSize, flags = unpack('<4sI4xI', f.read(0x10))
-            if recordType == 'LAND':
+            if recordType in recordTypes:
+                if not recordType in records:
+                    records[recordType] = {}
+                key = str(offset)
                 b = f.read(recordSize)
-                x, y = unpack('<2i', b[8:16])
-                key = str(x) + ',' + str(y)
-                record = parseRecord(b, 'LAND')
-                if not ('WNAM' in record['subrecords']):
-                    flag, = unpack('<I', record['subrecords']['DATA'])
-                    flag = flag | 1
-                    record['subrecords']['DATA'] = pack('<I', flag)
-                    record['subrecords']['VNML'] = defaultLAND['subrecords']['VNML']
-                    record['subrecords']['VHGT'] = defaultLAND['subrecords']['VHGT']
-                    record['subrecords']['WNAM'] = defaultLAND['subrecords']['WNAM']
-                    
-                records['LAND'][key] = record
-            elif recordType == 'LTEX':
-                b = f.read(recordSize)
-                records['LTEX'].append(parseRecord(b, 'LTEX'))
+                record = parseRecord(b, recordType, flags)
+                if recordType == 'LAND':
+                    x, y = unpack('<2i', b[8:16])
+                    key = str(x) + ',' + str(y)
+
+                records[recordType][key] = record
             else:
                 f.seek(recordSize, 1)
             offset += 16 + recordSize
     return records
 
+def sanitizeLand(records):
+    for coords in records:
+        record = records[coords]
+        if record['type'] == 'LAND' and not ('WNAM' in subrecordsByType(record)):
+            flag, = unpack('<I', subrecordsByType(record)['DATA'][0])
+            flag = flag | 1
+            record = replaceSubrecord(record, {'type':'DATA', 'data':pack('<I', flag)})
+            record = replaceSubrecord(record, defaultLAND['subrecords'][2])
+            record = replaceSubrecord(record, defaultLAND['subrecords'][3])
+            record = replaceSubrecord(record, defaultLAND['subrecords'][4])
+            records[coords] = record
+    return records
+
 def pluginToBMP(pluginPath, bmpDir, unsigned=True):
-    records = landRecordsFromPlugin(pluginPath)['LAND']
+    records = recordsFromPlugin(pluginPath, ['LAND'])['LAND']
+    records = sanitizeLand(records)
     if len(records) <= 0:
         print('Plugin does not contain any valid LAND records.')
         return
@@ -295,7 +361,7 @@ def pluginToBMP(pluginPath, bmpDir, unsigned=True):
             key = str(worldX) + ',' + str(worldY)
             b = None
             if key in records:
-                b = records[key]['subrecords']['WNAM']
+                b = subrecordsByType(records[key])['WNAM'][0]
             else:
                 b = bytearray(81)
             cellArray = PixelArray(b, 9, 9, 9)
@@ -312,57 +378,75 @@ def BMPToPlugin(masterPath, bmpPath, pluginPath):
     x = int(baseCoords[0])
     y = int(baseCoords[1])
     imageWNAMs = WNAMsFromBMP(bmpPath, (x,y))
-    oldRecords = landRecordsFromPlugin(masterPath)
-    oldLandRecords = oldRecords['LAND']
-    textureRecords = oldRecords['LTEX']
+    oldRecords = recordsFromPlugin(masterPath, ['TES3', 'LAND', 'LTEX'])
+
+    newRecords = {'TES3':{}}
+    if 'LTEX' in oldRecords:
+        newRecords['LTEX'] = oldRecords['LTEX']
+    
+    oldLandRecords = sanitizeLand(oldRecords['LAND'])
     newLandRecords = {}
     for coords in oldLandRecords:
         if coords in imageWNAMs:
             oldLandRecord = oldLandRecords[coords]
-            oldWNAM = oldLandRecord['subrecords']['WNAM']
+            oldWNAM = subrecordsByType(oldLandRecord)['WNAM'][0]
             imageWNAM = imageWNAMs[coords]
-            if oldWNAM != imageWNAM:
+            if oldWNAM != imageWNAM['data']:
                 newRecord = oldLandRecord
-                newRecord['subrecords']['WNAM'] = imageWNAM
+                newRecord = replaceSubrecord(newRecord, imageWNAM)
                 newLandRecords[coords] = newRecord
     if len(newLandRecords) <= 0:
         print('The heightmap was not altered. No plugin will be generated.')
-    else:    
+    else:
+        newRecords['LAND'] = newLandRecords
+        
+        masters = {
+            'Morrowind.esm':79837557
+        }
+        # Shan't compare Python's double-precision floats to plugins' single precision floats
+        baseVersion, = unpack('<f', pack('<f', 1.2))
+        version = baseVersion
+        masterVersion, = unpack('<f', subrecordsByType(oldRecords['TES3']['0'])['HEDR'][0][0:4])
+        version = max(version, masterVersion)
+        if version > baseVersion:
+            masters['Tribunal.esm'] = 4565686
+            masters['Bloodmoon.esm'] = 9631798
+        
         masterSize = os.path.getsize(masterPath)
         masterName = masterPath.split('/')[-1]
-        masterRecordSize = 0
-        if not(masterName.lower() in ['morrowind.esm', 'tribunal.esm', 'bloodmoon.esm']):
-            masterRecordSize = 0x19 + len(masterName)
 
-        def writeMaster(name, size):
-            master = pack('<4sI' + str(len(name) + 1) + 's4sIQ', 'MAST', len(name)+1, name, 'DATA', 8, size)
-            return master
+        isBase = False
+        for master in masters:
+            if masterName.lower() == master.lower():
+                isBase = True
+        
+        if not isBase:
+            masters[masterName] = masterSize
 
-        def writeRecord(record):
-            recordSize = 0
-            recordBytes = pack('<4s12x', record['type'])
-            for subtype in record['subrecords']:
-                subrecord = record['subrecords'][subtype]
-                recordSize += 0x8 + len(subrecord)
-                recordBytes += pack('<4sI', subtype, len(subrecord))
-                recordBytes += subrecord
-            recordBytes[4:8] = pack('<I', recordSize)
-            return recordBytes
+        recordCount = len(newRecords['LAND'])
+        if 'LTEX' in newRecords:
+            recordCount += len(newRecords['LTEX'])
+        
+        headerSubrecords = [
+            {'type':'HEDR', 'data':pack('<fI32s256sI', version, 0, '', '', recordCount)}
+        ]
+
+        for master in masters:
+            size = masters[master]
+            headerSubrecords.append({'type':'MAST', 'data':pack('<' + str(len(master) + 1) + 's', master)})
+            headerSubrecords.append({'type':'DATA', 'data':pack('<Q', size)})
+
+        newRecords['TES3']['0'] = {
+            'type':'TES3',
+            'flags':0,
+            'subrecords':headerSubrecords
+        }
 
         with open(pluginPath, mode='wb') as f:
-            f.write(pack('<4sI8x4sIf292xI', 'TES3', 0x1A5 + masterRecordSize, 'HEDR', 0x12C, 1.3, len(newLandRecords) + len(textureRecords)))
-
-            f.write(writeMaster('Morrowind.esm', 79837557))
-            f.write(writeMaster('Tribunal.esm', 4565686))
-            f.write(writeMaster('Bloodmoon.esm', 9631798))
-
-            if masterRecordSize > 0:
-                f.write(writeMaster(masterName, masterSize))
-            
-            for coords in newLandRecords:
-                f.write(writeRecord(newLandRecords[coords]))
-            for record in textureRecords:
-                f.write(writeRecord(record))
+            for recordType in newRecords:
+                for recordName in newRecords[recordType]:
+                    record = newRecords[recordType][recordName]
+                    f.write(packRecord(record))
 
         print('Created new plugin at "' + pluginPath + '"')
             
@@ -387,34 +471,31 @@ def verifyPath(path):
 def main(argv):
     usage = 'Usage: WNAMtool.py --extract -i [input plugin path] -b [bmp output dir] \n                   --repack  -i [input plugin path] -b [bmp image path] -o [output plugin path]'
 
-    try:
-        opts, args = getopt.getopt(argv, 'i:b:o:', longopts=['extract', 'repack'])
-        d = {
-            'mode':False,
-            '-i':False,
-            '-b':False,
-            '-o':False
-        }
-        for opt, arg in opts:
-            if opt in ['--extract', '--repack']:
-                d['mode'] = opt
-            else:
-                d[opt] = arg
+    opts, args = getopt.getopt(argv, 'i:b:o:', longopts=['extract', 'repack'])
+    d = {
+        'mode':False,
+        '-i':False,
+        '-b':False,
+        '-o':False
+    }
+    for opt, arg in opts:
+        if opt in ['--extract', '--repack']:
+            d['mode'] = opt
+        else:
+            d[opt] = arg
 
-        i = verifyPath(d['-i'])
-        b = verifyPath(d['-b'])
-        o = verifyPath(d['-o'])
+    i = verifyPath(d['-i'])
+    b = verifyPath(d['-b'])
+    o = verifyPath(d['-o'])
         
-        if d['mode'] == '--extract':
-            if b and i and i[2] and i[3] in ['esp', 'esm']:
-                pluginToBMP(i[0], b[1])
-                return
-        elif d['mode'] == '--repack':
-            if i and i[2] and i[3] in ['esp', 'esm'] and b and b[2] and b[3] == 'bmp' and o and o[2] and o[3] in ['esp', 'esm']:
-                BMPToPlugin(i[0], b[0], o[0])
-                return
-        print(usage)
-    except:
-        print(usage)
+    if d['mode'] == '--extract':
+        if b and i and i[2] and i[3] in ['esp', 'esm']:
+            pluginToBMP(i[0], b[1])
+            return
+    elif d['mode'] == '--repack':
+        if i and i[2] and i[3] in ['esp', 'esm'] and b and b[2] and b[3] == 'bmp' and o and o[2] and o[3] in ['esp', 'esm']:
+            BMPToPlugin(i[0], b[0], o[0])
+            return
+    print(usage)
 
 main(sys.argv[1:])
