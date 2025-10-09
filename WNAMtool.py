@@ -1,61 +1,27 @@
 import math
+import struct
 import os
 import sys
 import getopt
 
-class Data:
-    signed = False
-    
-    def getSize(self):
-        self.size = len(self.value)
-    
-    def to_bytes(self):
-        return self.value.to_bytes(self.size, byteorder='little', signed=self.signed)
-    
-    def from_bytes(self, b):
-        return int.from_bytes(b, byteorder='little', signed=self.signed)
-        
-    def __init__(self, i):
-        if type(i) == bytearray or type(i) == bytes:
-            self.size = len(i)
-            self.value = self.from_bytes(i)
-        else:
-            self.value = i
-            if not hasattr(self, 'size'):
-                self.getSize()
+def sb(s):
+    return s.encode('ascii')
 
-class String(Data):
-    def to_bytes(self):
-        return bytes(self.value, 'ascii') + bytes([0] * (self.size - len(self.value)))
-    
-    def from_bytes(self, b):
-        return b.decode('ascii')
+def pack(*args):
+    args = list(args)
+    for i in range(len(args)):
+        if type(args[i]) == str:
+            args[i] = args[i].encode('ascii')
+    return bytearray(struct.pack(*args))
 
-class Int8(Data):
-    size = 1
-    signed = True
+def unpack(*args):
+    ret = list(struct.unpack(*args))
+    for i in range(len(ret)):
+        if type(ret[i]) == bytes:
+            ret[i] = ret[i].decode('ascii')
+    return tuple(ret)
 
-class Int32(Data):
-    size = 4
-    signed = True
-    
-class Uint8(Data):
-    size = 1
-    signed = False
-    
-class Uint16(Data):
-    size = 2
-    signed = False
-    
-class Uint32(Data):
-    size = 4
-    signed = False
-
-class Uint64(Data):
-    size = 8
-    signed = False
-    
-class ColorTable(Data):
+class ColorTable():
 
     def getSize(self):
         self.size = len(self.value) * 4
@@ -73,7 +39,16 @@ class ColorTable(Data):
             v.append(list(b[i:i+4]))
         return v
 
-# Keep this as bytes so we don't use gigabytes of memory 
+    def __init__(self, i):
+        if type(i) == bytearray or type(i) == bytes:
+            self.size = len(i)
+            self.value = self.from_bytes(i)
+        else:
+            self.value = i
+            if not hasattr(self, 'size'):
+                self.getSize()
+
+# Keep this as bytes so we don't use a lot of memory
 class PixelArray():
 
     def getSize(self):
@@ -144,42 +119,38 @@ def createPalette(unsigned):
     return palette
 
 header = {
-    'Signature':        {'class': String, 'value': 'BM', 'error': 'Not a valid .BMP file.'},
-    'FileSize':         {'class': Uint32, 'value': 0x04A2},
-    'Reserved':         {'class': Uint32, 'value': 0x00},
-    'DataOffset':       {'class': Uint32, 'value': 0x0436},
-    'InfoSize':         {'class': Uint32, 'value': 0x28, 'error': 'Incompatible header.'},
-    'Width':            {'class': Uint32, 'value': 0x09},
-    'Height':           {'class': Uint32, 'value': 0x09},
-    'Planes':           {'class': Uint16, 'value': 0x01, 'error': 'Too many/no planes.'},
-    'BitsPerPixel':     {'class': Uint16, 'value': 0x08, 'error': 'Only 8bpp paletted images are supported.'},
-    'Compression':      {'class': Uint32, 'value': 0x00, 'error': 'Compressed images aren\'t supported.'},
-    'ImageSize':        {'class': Uint32, 'value': 0x6C},
-    'XpixelsPerM':      {'class': Uint32, 'value': 0x0EC4},
-    'YpixelsPerM':      {'class': Uint32, 'value': 0x0EC4},
-    'ColorsUsed':       {'class': Uint32, 'value': 0x0100},
-    'ImportantColors':  {'class': Uint32, 'value': 0x0100},
+    'Signature':        {'format': '<2s', 'value': 'BM', 'error': 'Not a valid .BMP file.'},
+    'FileSize':         {'format': '<I', 'value': 0x04A2},
+    'Reserved':         {'format': '<I', 'value': 0x00},
+    'DataOffset':       {'format': '<I', 'value': 0x0436},
+    'InfoSize':         {'format': '<I', 'value': 0x28, 'error': 'Incompatible header.'},
+    'Width':            {'format': '<I', 'value': 0x09},
+    'Height':           {'format': '<I', 'value': 0x09},
+    'Planes':           {'format': '<H', 'value': 0x01, 'error': 'Too many/no planes.'},
+    'BitsPerPixel':     {'format': '<H', 'value': 0x08, 'error': 'Only 8bpp paletted images are supported.'},
+    'Compression':      {'format': '<I', 'value': 0x00, 'error': 'Compressed images aren\'t supported.'},
+    'ImageSize':        {'format': '<I', 'value': 0x6C},
+    'XpixelsPerM':      {'format': '<I', 'value': 0x0EC4},
+    'YpixelsPerM':      {'format': '<I', 'value': 0x0EC4},
+    'ColorsUsed':       {'format': '<I', 'value': 0x0100},
+    'ImportantColors':  {'format': '<I', 'value': 0x0100},
 }
 
 def parseHeader(b):
-    read = 0
+    offset = 0
     for item in header:
-        itemClass = header[item]['class']
+        itemFormat = header[item]['format']
         default = header[item]['value']
-        size = 0
-        if itemClass == String:
-            size = 2
-        else:
-            size = itemClass.size
-        itemBytes = b[read:read+size]
-        data = itemClass(itemBytes)
+        size = struct.calcsize(itemFormat)
+        itemBytes = b[offset:offset+size]
+        data, = unpack(itemFormat, itemBytes)
 
-        if data.value != default and 'error' in header[item]:
+        if data != default and 'error' in header[item]:
             print(header[item]['error'])
             return False
             
-        header[item]['value'] = data.value
-        read += size
+        header[item]['value'] = data
+        offset += size
 
 def WNAMsFromBMP(bmpPath, coords):
     pixelArray = None
@@ -199,7 +170,7 @@ def WNAMsFromBMP(bmpPath, coords):
             padWidth = padLength(width, 4)
             size = padWidth * height
         pixelList = list(img.read(size))
-        b = []
+        b = bytearray()
         # I wish I could rely on image editors preserving color indices
         for pixel in pixelList:
             value = palette.value[pixel][0]
@@ -208,14 +179,13 @@ def WNAMsFromBMP(bmpPath, coords):
             else:
                 value += 128
             b.append(value)
-        b = bytes(b)
         pixelArray = PixelArray(b, width, height, padWidth)
 
     cellWidth = int(width / 9)
     cellHeight = int(height / 9)
 
     WNAMs = {}
-    
+
     for x in range(cellWidth):
         for y in range(cellHeight):
             key = str(coords[0]+x) + ',' + str(coords[1]+y)
@@ -226,7 +196,7 @@ def WNAMsFromBMP(bmpPath, coords):
 def BMPFromPixelArray(bmpPath, pixelArray, unsigned):
     b = bytearray()
     for item in header:
-        itemClass = header[item]['class']
+        itemFormat = header[item]['format']
         default = header[item]['value']
         value = default
         if item == 'FileSize':
@@ -237,7 +207,7 @@ def BMPFromPixelArray(bmpPath, pixelArray, unsigned):
             value = pixelArray.height
         elif item == 'ImageSize':
             value = pixelArray.height * pixelArray.padWidth
-        b += itemClass(value).to_bytes()
+        b += pack(itemFormat, value)
     palette = createPalette(unsigned)
     b += ColorTable(palette).to_bytes()
     b += pixelArray.value
@@ -247,11 +217,11 @@ def BMPFromPixelArray(bmpPath, pixelArray, unsigned):
 defaultLAND = {
     'type':'LAND',
     'subrecords':{
-        'INTV':Int32(0).to_bytes() * 2,
-        'DATA':Uint32(1).to_bytes(),
-        'VNML':bytearray([0, 0, 127] * 4225),
-        'VHGT':bytearray(b'\x00\x00\x80\xC3') + bytes(4228),
-        'WNAM':bytearray([128]*81)
+        'INTV':pack('<2i', 0, 0),
+        'DATA':pack('<I', 1),
+        'VNML':pack('>3b', 0, 0, 127) * 4225,
+        'VHGT':pack('<f426725b3x', -256, *bytes(426725)),
+        'WNAM':pack('81x')
     }
 }
 
@@ -259,13 +229,10 @@ def parseRecord(b, recordType):
     record = {'type':recordType, 'subrecords':{}}
     offset = 0
     while offset < len(b):
-        subtype = String(b[offset:offset+4]).value
-        offset += 4
-        size = Uint32(b[offset:offset+4]).value
-        offset += 4
-        data = b[offset:offset+size]
+        subtype, size = unpack('<4sI', b[offset:offset+8])
+        offset += 8
+        record['subrecords'][subtype] = b[offset:offset+size]
         offset += size
-        record['subrecords'][subtype] = data
     return record
 
 def landRecordsFromPlugin(pluginPath):
@@ -274,20 +241,16 @@ def landRecordsFromPlugin(pluginPath):
     with open(pluginPath, mode='rb') as f:
         offset = 0
         while offset < fileSize:
-            recordType = String(f.read(4)).value
-            recordSize = Uint32(f.read(4)).value
-            f.seek(4, 1)
-            flags = f.read(4)
+            recordType, recordSize, flags = unpack('<4sI4xI', f.read(0x10))
             if recordType == 'LAND':
                 b = f.read(recordSize)
-                x = Int32(b[8:12]).value
-                y = Int32(b[12:16]).value
+                x, y = unpack('<2i', b[8:16])
                 key = str(x) + ',' + str(y)
                 record = parseRecord(b, 'LAND')
                 if not ('WNAM' in record['subrecords']):
-                    flag = Uint32(record['subrecords']['DATA'])
-                    flag.value = flag.value | 1
-                    record['subrecords']['DATA'] = flag.to_bytes()
+                    flag, = unpack('<I', record['subrecords']['DATA'])
+                    flag = flag | 1
+                    record['subrecords']['DATA'] = pack('<I', flag)
                     record['subrecords']['VNML'] = defaultLAND['subrecords']['VNML']
                     record['subrecords']['VHGT'] = defaultLAND['subrecords']['VHGT']
                     record['subrecords']['WNAM'] = defaultLAND['subrecords']['WNAM']
@@ -368,51 +331,32 @@ def BMPToPlugin(masterPath, bmpPath, pluginPath):
         masterSize = os.path.getsize(masterPath)
         masterName = masterPath.split('/')[-1]
         masterRecordSize = 0
-        if masterName.lower() in ['morrowind.esm', 'tribunal.esm', 'bloodmoon.esm']:
-            masterName = ''
-        else:
+        if not(masterName.lower() in ['morrowind.esm', 'tribunal.esm', 'bloodmoon.esm']):
             masterRecordSize = 0x19 + len(masterName)
 
         def writeMaster(name, size):
-            master = bytearray()
-            master += String('MAST').to_bytes()
-            master += Uint32(len(name)+1).to_bytes()
-            master += String(name).to_bytes()
-            master += bytes(1)
-            master += String('DATA').to_bytes()
-            master += Uint32(0x8).to_bytes()
-            master += Uint64(size).to_bytes()
+            master = pack('<4sI' + str(len(name) + 1) + 's4sIQ', 'MAST', len(name)+1, name, 'DATA', 8, size)
             return master
 
         def writeRecord(record):
             recordSize = 0
-            recordBytes = bytearray()
-            recordBytes += String(record['type']).to_bytes()
-            recordBytes += bytes(0xC)
+            recordBytes = pack('<4s12x', record['type'])
             for subtype in record['subrecords']:
                 subrecord = record['subrecords'][subtype]
                 recordSize += 0x8 + len(subrecord)
-                recordBytes += String(subtype).to_bytes()
-                recordBytes += Uint32(len(subrecord)).to_bytes()
+                recordBytes += pack('<4sI', subtype, len(subrecord))
                 recordBytes += subrecord
-            recordBytes[4:8] = Uint32(recordSize).to_bytes()
+            recordBytes[4:8] = pack('<I', recordSize)
             return recordBytes
 
         with open(pluginPath, mode='wb') as f:
-            f.write(String('TES3').to_bytes())
-            f.write(Uint32(0x1A5 + masterRecordSize).to_bytes())
-            f.write(bytes(8))
-            f.write(String('HEDR').to_bytes())
-            f.write(Uint32(0x12C).to_bytes())
-            f.write(bytes([0x66, 0x66, 0xA6, 0x3F]))
-            f.write(bytes(0x124))
-            f.write(Uint32(len(newLandRecords) + len(textureRecords)).to_bytes())
+            f.write(pack('<4sI8x4sIf292xI', 'TES3', 0x1A5 + masterRecordSize, 'HEDR', 0x12C, 1.3, len(newLandRecords) + len(textureRecords)))
 
             f.write(writeMaster('Morrowind.esm', 79837557))
             f.write(writeMaster('Tribunal.esm', 4565686))
             f.write(writeMaster('Bloodmoon.esm', 9631798))
 
-            if len(masterName) > 0:
+            if masterRecordSize > 0:
                 f.write(writeMaster(masterName, masterSize))
             
             for coords in newLandRecords:
