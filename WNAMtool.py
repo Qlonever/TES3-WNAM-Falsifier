@@ -104,10 +104,118 @@ class PixelArray():
             self.size = len(i)
             self.value = i
 
+class Subrecord():
+    
+    def pack(self):
+        info = pack('<4sI', self.tag, len(self.data))
+        return info + self.data
+
+    def __init__(self, i):
+        if not i:
+            return
+        if isinstance(i, dict):
+            self.tag = i['tag']
+            self.data = i['data']
+        else:
+            self.tag, size = unpack('<4sI', i.read(8))
+            self.data = bytearray(i.read(size))
+
+# Record dict structure:
+#{
+#    'tag': 4 character string,
+#    'flags': int containing bit flags,
+#    'subrecords': [
+#        subrecord,
+#        ...
+#    ]
+#}
+#
+# Subrecord structure:
+#
+#{
+#    'tag': 4 character string,
+#    'data': byte data of subrecord
+#}
+
+class Record():
+
+    def pack(self):
+        data = bytearray()
+        for subrecord in self.subrecords:
+            data += subrecord.pack()
+        info = pack('<4sI4xI', self.tag, len(data), self.flags)
+        return info + data
+
+    def sortSubrecords(self):
+        for subrecord in self.subrecords:
+            if not subrecord.tag in self.subrecordsSorted:
+                self.subrecordsSorted[subrecord.tag] = []
+            self.subrecordsSorted[subrecord.tag].append(subrecord)
+
+    def getSubrecord(self, tag, index=0):
+        try:
+            return self.subrecordsSorted[tag][index]
+        except:
+            return False
+
+    def addSubrecord(self, subrecord):
+        if isinstance(subrecord, dict):
+            subrecord = Subrecord(subrecord)
+        
+        self.subrecords.append(subrecord)
+        if not subrecord.tag in self.subrecordsSorted:
+            self.subrecordsSorted[subrecord.tag] = []
+        self.subrecordsSorted[subrecord.tag].append(subrecord)
+        
+
+    def setSubrecord(self, rep, index=0):
+        if isinstance(rep, dict):
+            rep = Subrecord(rep)
+            
+        if not rep.tag in self.subrecordsSorted or index >= len(self.subrecordsSorted[rep.tag]):
+            self.addSubrecord(rep)
+            return
+        
+        count = 0
+        for i in range(len(self.subrecords)):
+            subrecord = self.subrecords[i]
+            if subrecord.tag == rep.tag:
+                if count == index:
+                    self.subrecords[i] = rep
+                    self.subrecordsSorted[rep.tag][count] = rep
+                    return
+                count += 1
+        return
+
+    def __init__(self, i, tags=False):
+        if not i:
+            return
+        
+        self.subrecords = []
+        self.subrecordsSorted = {}
+        
+        if isinstance(i, dict):
+            self.tag = i['tag']
+            self.flags = i['flags']
+            for subrecord in i['subrecords']:
+                self.addSubrecord(subrecord)
+        else:
+            start = i.tell()
+            self.tag, size, self.flags = unpack('<4sI4xI', i.read(0x10))
+            if tags and not self.tag in tags:
+                i.seek(size, 1)
+                return
+            
+            offset = i.tell()
+            while offset < start + size + 0x10:
+                subrecord = Subrecord(i)
+                self.addSubrecord(subrecord)
+                offset = i.tell()
+
 def padLength(length, pad):
     return int(pad * math.ceil(length/pad))
 
-def createPalette(unsigned):
+def createPalette(unsigned=True):
     palette = []
     for i in range(256):
         if unsigned:
@@ -190,12 +298,12 @@ def WNAMsFromBMP(bmpPath, coords):
         for y in range(cellHeight):
             key = str(coords[0]+x) + ',' + str(coords[1]+y)
             data = pixelArray.crop(x*9,y*9,9,9).value
-            subrecord = {'type':'WNAM', 'data':data}
+            subrecord = Subrecord({'tag':'WNAM', 'data':data})
             WNAMs[key] = subrecord
 
     return WNAMs
 
-def BMPFromPixelArray(bmpPath, pixelArray, unsigned):
+def BMPFromPixelArray(bmpPath, pixelArray):
     b = bytearray()
     for item in header:
         itemFormat = header[item]['format']
@@ -210,126 +318,59 @@ def BMPFromPixelArray(bmpPath, pixelArray, unsigned):
         elif item == 'ImageSize':
             value = pixelArray.height * pixelArray.padWidth
         b += pack(itemFormat, value)
-    palette = createPalette(unsigned)
+    palette = createPalette()
     b += ColorTable(palette).to_bytes()
     b += pixelArray.value
     with open(bmpPath, mode='wb') as img:
         img.write(b)
 
-defaultLAND = {
-    'type':'LAND',
-    'flags':pack('<I', 0),
-    'subrecords':[
-        {'type':'INTV', 'data':pack('<2i', 0, 0)},
-        {'type':'DATA', 'data':pack('<I', 1)},
-        {'type':'VNML', 'data':pack('>3b', 0, 0, 127) * 4225},
-        {'type':'VHGT', 'data':pack('<f4225b3x', -256, *bytes(4225))},
-        {'type':'WNAM', 'data':pack('<81b', *([-128] * 81))}
-    ]
-}
-
-# Record structure:
-#{
-#    'type': 4 character string,
-#    'flags': int containing bit flags,
-#    'subrecords': [
-#        subrecord,
-#        ...
-#    ]
-#}
-#
-# Subrecord structure:
-#
-#{
-#    'type': 4 character string,
-#    'data': byte data of subrecord
-#}
-
-def packSubrecord(subrecord):
-    data = subrecord['data']
-    size = len(data)
-    b = pack('<4sI', subrecord['type'], size)
-    b += data
-    return b
-
-def packRecord(record):
-    recordSize = 0
-    recordInfo = pack('<4s8xI', record['type'], record['flags'])
-    b = bytearray()
-    for subrecord in record['subrecords']:
-        b += packSubrecord(subrecord)
-    recordInfo[4:8] = pack('<I', len(b))
-    b = recordInfo + b
-    return b
-
-def subrecordsByType(record):
-    subrecords = {}
-    for subrecord in record['subrecords']:
-        if not subrecord['type'] in subrecords:
-            subrecords[subrecord['type']] = []
-        subrecords[subrecord['type']].append(subrecord['data'])
-    return subrecords
-
-def replaceSubrecord(record, rep, n=1):
-    num = 0
-    for i in range(len(record['subrecords'])):
-        subrecord = record['subrecords'][i]
-        if subrecord['type'] == rep['type']:
-            num += 1
-            if num == n:
-                record['subrecords'][i] = rep
-                return record
-    record['subrecords'].append(rep)
-    return record
-
-def parseRecord(b, recordType, flags):
-    record = {'type':recordType, 'flags':flags, 'subrecords':[]}
-    offset = 0
-    while offset < len(b):
-        subtype, size = unpack('<4sI', b[offset:offset+8])
-        offset += 8
-        subrecord = {'type':subtype, 'data':b[offset:offset+size]}
-        offset += size
-        record['subrecords'].append(subrecord)
-    return record
-
-def recordsFromPlugin(pluginPath, recordTypes):
+def recordsFromPlugin(pluginPath, recordTags=False):
     records = {}
     fileSize = os.path.getsize(pluginPath)
     with open(pluginPath, mode='rb') as f:
-        offset = 0
-        while offset < fileSize:
-            recordType, recordSize, flags = unpack('<4sI4xI', f.read(0x10))
-            if recordType in recordTypes:
-                if not recordType in records:
-                    records[recordType] = {}
-                key = str(offset)
-                b = f.read(recordSize)
-                record = parseRecord(b, recordType, flags)
-                if recordType == 'LAND':
-                    x, y = unpack('<2i', b[8:16])
+        header = Record(f)
+        recordCount, = unpack('<296xI', header.getSubrecord('HEDR').data)
+        f.seek(0)
+        for _ in range(recordCount):
+            key = str(f.tell())
+            record = Record(f, recordTags)
+            if record:
+                if not record.tag in records:
+                    records[record.tag] = {}
+                if record.tag == 'LAND':
+                    x, y = unpack('<2i', (record.getSubrecord('INTV').data))
                     key = str(x) + ',' + str(y)
 
-                records[recordType][key] = record
-            else:
-                f.seek(recordSize, 1)
-            offset += 16 + recordSize
-    return records
+                records[record.tag][key] = record
+                
+        return records
+
+defaultLAND = Record({
+    'tag':'LAND',
+    'flags':0,
+    'subrecords':[
+        {'tag':'INTV', 'data':pack('<2i', 0, 0)},
+        {'tag':'DATA', 'data':pack('<I', 1)},
+        {'tag':'VNML', 'data':pack('>3b', 0, 0, 127) * 4225},
+        {'tag':'VHGT', 'data':pack('<f4225b3x', -256, *bytes(4225))},
+        {'tag':'WNAM', 'data':pack('<81b', *([-128] * 81))}
+    ]
+})
 
 def sanitizeLand(records):
     for coords in records:
         record = records[coords]
-        if record['type'] == 'LAND' and not ('WNAM' in subrecordsByType(record)):
-            flag, = unpack('<I', subrecordsByType(record)['DATA'][0])
+        if record.tag == 'LAND' and not record.getSubrecord('WNAM'):
+            flag, = unpack('<I', record.getSubrecord('DATA').data)
             flag = flag | 1
-            record = replaceSubrecord(record, {'type':'DATA', 'data':pack('<I', flag)})
-            record = replaceSubrecord(record, defaultLAND['subrecords'][2])
-            record = replaceSubrecord(record, defaultLAND['subrecords'][3])
-            record = replaceSubrecord(record, defaultLAND['subrecords'][4])
+            record.setSubrecord(Subrecord({'tag':'DATA', 'data':pack('<I', flag)}))
+            record.setSubrecord(defaultLAND.subrecords[2])
+            record.setSubrecord(defaultLAND.subrecords[3])
+            record.setSubrecord(defaultLAND.subrecords[4])
             records[coords] = record
     return records
 
-def pluginToBMP(pluginPath, bmpDir, unsigned=True):
+def pluginToBMP(pluginPath, bmpDir):
     records = recordsFromPlugin(pluginPath, ['LAND'])['LAND']
     records = sanitizeLand(records)
     if len(records) <= 0:
@@ -353,7 +394,7 @@ def pluginToBMP(pluginPath, bmpDir, unsigned=True):
     width = cellWidth * 9
     height = cellHeight * 9
     padWidth = padLength(width, 4)
-    image = PixelArray(bytearray(padWidth * height), width, height, padWidth)
+    mapArray = PixelArray(bytearray(padWidth * height), width, height, padWidth)
     for x in range(cellWidth):
         worldX = x + left
         for y in range(cellHeight):
@@ -361,13 +402,13 @@ def pluginToBMP(pluginPath, bmpDir, unsigned=True):
             key = str(worldX) + ',' + str(worldY)
             b = None
             if key in records:
-                b = subrecordsByType(records[key])['WNAM'][0]
+                b = records[key].getSubrecord('WNAM').data
             else:
                 b = bytearray(81)
             cellArray = PixelArray(b, 9, 9, 9)
-            image.impose(cellArray, x*9, y*9)
+            mapArray.impose(cellArray, x*9, y*9)
     bmpPath = bmpDir + '/' + str(left) + ',' + str(bottom) + '.bmp'
-    BMPFromPixelArray(bmpPath, image, unsigned)
+    BMPFromPixelArray(bmpPath, mapArray)
     print('Converted WNAMs to BMP at "' + bmpPath + '"')
 
 def BMPToPlugin(masterPath, bmpPath, pluginPath):
@@ -389,11 +430,11 @@ def BMPToPlugin(masterPath, bmpPath, pluginPath):
     for coords in oldLandRecords:
         if coords in imageWNAMs:
             oldLandRecord = oldLandRecords[coords]
-            oldWNAM = subrecordsByType(oldLandRecord)['WNAM'][0]
+            oldWNAM = oldLandRecord.getSubrecord('WNAM')
             imageWNAM = imageWNAMs[coords]
-            if oldWNAM != imageWNAM['data']:
+            if oldWNAM.data != imageWNAM.data:
                 newRecord = oldLandRecord
-                newRecord = replaceSubrecord(newRecord, imageWNAM)
+                newRecord.setSubrecord(imageWNAM)
                 newLandRecords[coords] = newRecord
     if len(newLandRecords) <= 0:
         print('The heightmap was not altered. No plugin will be generated.')
@@ -406,7 +447,8 @@ def BMPToPlugin(masterPath, bmpPath, pluginPath):
         # Shan't compare Python's double-precision floats to plugins' single precision floats
         baseVersion, = unpack('<f', pack('<f', 1.2))
         version = baseVersion
-        masterVersion, = unpack('<f', subrecordsByType(oldRecords['TES3']['0'])['HEDR'][0][0:4])
+        masterHeader = oldRecords['TES3']['0']
+        masterVersion, = unpack('<f', masterHeader.getSubrecord('HEDR').data[0:4])
         version = max(version, masterVersion)
         if version > baseVersion:
             masters['Tribunal.esm'] = 4565686
@@ -426,27 +468,25 @@ def BMPToPlugin(masterPath, bmpPath, pluginPath):
         recordCount = len(newRecords['LAND'])
         if 'LTEX' in newRecords:
             recordCount += len(newRecords['LTEX'])
-        
-        headerSubrecords = [
-            {'type':'HEDR', 'data':pack('<fI32s256sI', version, 0, '', '', recordCount)}
-        ]
+
+        headerRecord = Record({
+            'tag':'TES3',
+            'flags':0,
+            'subrecords':[{'tag':'HEDR', 'data':pack('<fI32s256sI', version, 0, '', '', recordCount)}]
+        })
 
         for master in masters:
             size = masters[master]
-            headerSubrecords.append({'type':'MAST', 'data':pack('<' + str(len(master) + 1) + 's', master)})
-            headerSubrecords.append({'type':'DATA', 'data':pack('<Q', size)})
+            headerRecord.addSubrecord({'tag':'MAST', 'data':pack('<' + str(len(master) + 1) + 's', master)})
+            headerRecord.addSubrecord({'tag':'DATA', 'data':pack('<Q', size)})
 
-        newRecords['TES3']['0'] = {
-            'type':'TES3',
-            'flags':0,
-            'subrecords':headerSubrecords
-        }
+        newRecords['TES3']['0'] = headerRecord
 
         with open(pluginPath, mode='wb') as f:
-            for recordType in newRecords:
-                for recordName in newRecords[recordType]:
-                    record = newRecords[recordType][recordName]
-                    f.write(packRecord(record))
+            for recordTag in newRecords:
+                for recordName in newRecords[recordTag]:
+                    record = newRecords[recordTag][recordName]
+                    f.write(record.pack())
 
         print('Created new plugin at "' + pluginPath + '"')
             
