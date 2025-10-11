@@ -315,10 +315,11 @@ def WNAMsFromBMP(bmpPath, coords):
             # We'll assume that image editors pad rows to multiples of 4 bytes
             padWidth = padLength(width, 4)
             size = padWidth * height
-        pixelList = list(img.read(size))
+
+        pixelData = img.read(size)
         b = bytearray()
         # I wish I could rely on image editors preserving color indices
-        for pixel in pixelList:
+        for pixel in pixelData:
             value = palette.value[pixel][0]
             if value >= 128:
                 value -= 128
@@ -326,11 +327,11 @@ def WNAMsFromBMP(bmpPath, coords):
                 value += 128
             b.append(value)
         pixelArray = PixelArray(b, width, height, padWidth)
+    
+    WNAMs = {}
 
     cellWidth = int(width / 9)
     cellHeight = int(height / 9)
-
-    WNAMs = {}
 
     for x in range(cellWidth):
         for y in range(cellHeight):
@@ -369,8 +370,10 @@ def recordsFromPlugins(pluginDict, recordTags=False):
             header = Record(f)
             recordCount, = unpack('<296xI', header.getSubrecord('HEDR').data)
             records['TES3'][header.getName()] = header
+
+            print('Reading ' + str(recordCount) + ' records from ' + pluginName + '... ', end='')
             
-            for _ in range(recordCount):
+            for num in range(recordCount):
                 record = Record(f, recordTags)
                 if not record.passed:
                     if not record.tag in records:
@@ -378,7 +381,10 @@ def recordsFromPlugins(pluginDict, recordTags=False):
                             
                     key = record.getName()
                     records[record.tag][key] = record
-                
+
+            print('Done.')
+
+    print('')
     return records
 
 defaultLAND = Record({
@@ -445,7 +451,7 @@ def pluginsToBMP(pluginList, bmpDir):
             mapArray.impose(cellArray, x*9, y*9)
     bmpPath = bmpDir + '/' + str(left) + ',' + str(bottom) + '.bmp'
     BMPFromPixelArray(bmpPath, mapArray)
-    print('Converted WNAMs to BMP at "' + bmpPath + '"')
+    return 'Converted WNAMs to BMP at "' + bmpPath + '"'
 
 def BMPToPlugin(mastersDict, bmpPath, pluginPath):
     baseCoords = bmpPath.split('/')[-1].split('.')[0].split(',')
@@ -572,13 +578,13 @@ def BMPToPlugin(mastersDict, bmpPath, pluginPath):
                     record = newRecords[recordTag][recordName]
                     f.write(record.pack())
 
-        print('Created new plugin at "' + pluginPath + '"')
+        return 'Created new plugin at "' + pluginPath + '"'
             
 def verifyPath(path):
     if not path:
         return False
     filename = False
-    extension = False
+    extension = ''
     path = path.replace('\\', '/').replace('"', '')
     split = path.split('/')
     if '.' in split[-1]:
@@ -664,7 +670,9 @@ def MWPlugins(inipath):
         return False       
 
 def main(argv):
-    usage = 'Usage: WNAMtool.py --extract -i [input plugin, openmw.cfg, or morrowind.ini path] -b [bmp output dir] \n                   --repack  -i [input plugin, openmw.cfg, or morrowind.ini path] -b [bmp image path] -o [output plugin path]'
+    print('')
+    
+    response = 'Usage: WNAMtool.py --extract -i [input plugin, openmw.cfg, or morrowind.ini path] -b [bmp output dir] \n                   --repack  -i [input plugin, openmw.cfg, or morrowind.ini path] -b [bmp image path] -o [output plugin path]'
 
     opts, args = getopt.getopt(argv, 'i:b:o:', longopts=['extract', 'repack'])
     d = {
@@ -693,11 +701,13 @@ def main(argv):
             elif i[3] == 'ini':
                 contentFiles = MWPlugins(i[0])
             if contentFiles:
-                pluginsToBMP(contentFiles, b[1])
-                return
+                response = pluginsToBMP(contentFiles, b[1])
         
     elif d['mode'] == '--repack':
-        if i and i[2] and b and b[2] and b[3] == 'bmp' and o and o[2] and o[3] in ['esp', 'esm', 'omwaddon']:
+        if i and i[2] and b and b[3] == 'bmp' and o:
+            outputPath = o[1] +'/WNAM_Falsified.esp'
+            if o[3] in ['esp', 'esm', 'omwaddon']:
+                outputPath = o[0]
             contentFiles = None
             if i[3] in ['esp', 'esm', 'omwaddon']:
                 contentFiles = {i[2].lower():i[0]}
@@ -710,9 +720,8 @@ def main(argv):
                     if path == o[0]:
                         del contentFiles[name]
                         break
-                BMPToPlugin(contentFiles, b[0], o[0])
-                return
+                response = BMPToPlugin(contentFiles, b[0], outputPath)
             
-    print(usage)
+    print(response)
 
 main(sys.argv[1:])
