@@ -10,14 +10,14 @@ def sb(s):
 def pack(*args):
     args = list(args)
     for i in range(len(args)):
-        if type(args[i]) == str:
+        if isinstance(args[i], str):
             args[i] = args[i].encode('ascii')
     return bytearray(struct.pack(*args))
 
 def unpack(*args):
     ret = list(struct.unpack(*args))
     for i in range(len(ret)):
-        if type(ret[i]) == bytes:
+        if isinstance(ret[i], bytes):
             ret[i] = ret[i].decode('ascii')
     return tuple(ret)
 
@@ -40,7 +40,7 @@ class ColorTable():
         return v
 
     def __init__(self, i):
-        if type(i) == bytearray or type(i) == bytes:
+        if isinstance(i, (bytes, bytearray)):
             self.size = len(i)
             self.value = self.from_bytes(i)
         else:
@@ -96,7 +96,7 @@ class PixelArray():
         self.width = int(width)
         self.height = int(height)
         self.padWidth = int(padWidth)
-        if not(type(i) == bytearray or type(i) == bytes):
+        if not isinstance(i, (bytes, bytearray)):
             if not hasattr(self, 'size'):
                 self.getSize()
             self.value = self.to_bytes(i)
@@ -109,6 +109,9 @@ class Subrecord():
     def pack(self):
         info = pack('<4sI', self.tag, len(self.data))
         return info + self.data
+
+    def __repr__(self):
+        return self.tag + ': ' + str(self.data)
 
     def __init__(self, i):
         if not i:
@@ -187,10 +190,41 @@ class Record():
                 count += 1
         return
 
+    # Used to replace records, or identify them easily
+    def setId(self):
+        if self.tag == 'TES3':
+            if hasattr(self, 'plugin'):
+                self.id = self.plugin['name'].lower()
+        elif self.tag == 'LAND':
+            x, y = unpack('<2i', (self.getSubrecord('INTV').data))
+            self.id = str(x) + ',' + str(y)
+        elif self.tag == 'LTEX':
+            index, = unpack('<I', self.getSubrecord('INTV').data)
+            if hasattr(self, 'plugin'):
+                self.id = self.plugin['name'] + ' '
+            else:
+                self.id = ''
+            self.id += str(index)
+
+    def getName(self):
+        if hasattr(self, 'id'):
+            return self.id
+        return self.plugin['name'] + ' ' + str(self.plugin['offset'])
+
+    def __repr__(self):
+        text = self.tag + ': \n'
+        text += 'flags: ' + str(self.flags) + '\n'
+        text += 'subrecords: \n'
+        for subrecord in self.subrecords:
+            text += repr(subrecord) +'\n'
+
+        return text
+
     def __init__(self, i, tags=False):
         if not i:
             return
-        
+
+        self.passed = False
         self.subrecords = []
         self.subrecordsSorted = {}
         
@@ -204,6 +238,7 @@ class Record():
             self.tag, size, self.flags = unpack('<4sI4xI', i.read(0x10))
             if tags and not self.tag in tags:
                 i.seek(size, 1)
+                self.passed = True
                 return
             
             offset = i.tell()
@@ -211,6 +246,9 @@ class Record():
                 subrecord = Subrecord(i)
                 self.addSubrecord(subrecord)
                 offset = i.tell()
+            
+            self.plugin = {'name':i.name.split('/')[-1], 'offset':start}
+        self.setId()
 
 def padLength(length, pad):
     return int(pad * math.ceil(length/pad))
@@ -324,26 +362,24 @@ def BMPFromPixelArray(bmpPath, pixelArray):
     with open(bmpPath, mode='wb') as img:
         img.write(b)
 
-def recordsFromPlugin(pluginPath, recordTags=False):
-    records = {}
-    fileSize = os.path.getsize(pluginPath)
-    with open(pluginPath, mode='rb') as f:
-        header = Record(f)
-        recordCount, = unpack('<296xI', header.getSubrecord('HEDR').data)
-        f.seek(0)
-        for _ in range(recordCount):
-            key = str(f.tell())
-            record = Record(f, recordTags)
-            if record:
-                if not record.tag in records:
-                    records[record.tag] = {}
-                if record.tag == 'LAND':
-                    x, y = unpack('<2i', (record.getSubrecord('INTV').data))
-                    key = str(x) + ',' + str(y)
-
-                records[record.tag][key] = record
+def recordsFromPlugins(pluginDict, recordTags=False):
+    records = {'TES3':{}}
+    for pluginName, pluginPath in pluginDict.items():
+        with open(pluginPath, mode='rb') as f:
+            header = Record(f)
+            recordCount, = unpack('<296xI', header.getSubrecord('HEDR').data)
+            records['TES3'][header.getName()] = header
+            
+            for _ in range(recordCount):
+                record = Record(f, recordTags)
+                if not record.passed:
+                    if not record.tag in records:
+                        records[record.tag] = {}
+                            
+                    key = record.getName()
+                    records[record.tag][key] = record
                 
-        return records
+    return records
 
 defaultLAND = Record({
     'tag':'LAND',
@@ -364,16 +400,16 @@ def sanitizeLand(records):
             flag, = unpack('<I', record.getSubrecord('DATA').data)
             flag = flag | 1
             record.setSubrecord(Subrecord({'tag':'DATA', 'data':pack('<I', flag)}))
-            record.setSubrecord(defaultLAND.subrecords[2])
-            record.setSubrecord(defaultLAND.subrecords[3])
-            record.setSubrecord(defaultLAND.subrecords[4])
+            record.setSubrecord(defaultLAND.getSubrecord('VNML'))
+            record.setSubrecord(defaultLAND.getSubrecord('VHGT'))
+            record.setSubrecord(defaultLAND.getSubrecord('WNAM'))
             records[coords] = record
     return records
 
-def pluginToBMP(pluginPath, bmpDir):
-    records = recordsFromPlugin(pluginPath, ['LAND'])['LAND']
-    records = sanitizeLand(records)
-    if len(records) <= 0:
+def pluginsToBMP(pluginList, bmpDir):
+    landRecords = recordsFromPlugins(pluginList, ['LAND'])['LAND']
+    landRecords = sanitizeLand(landRecords)
+    if len(landRecords) <= 0:
         print('Plugin does not contain any valid LAND records.')
         return
     # I hope nobody ever makes landmasses 100000 cells away from Vvardenfell
@@ -381,7 +417,7 @@ def pluginToBMP(pluginPath, bmpDir):
     right = -100000
     bottom = 100000
     top = -100000
-    for coords in records:
+    for coords in landRecords:
         coords = coords.split(',')
         x = int(coords[0])
         y = int(coords[1])
@@ -401,8 +437,8 @@ def pluginToBMP(pluginPath, bmpDir):
             worldY = y + bottom
             key = str(worldX) + ',' + str(worldY)
             b = None
-            if key in records:
-                b = records[key].getSubrecord('WNAM').data
+            if key in landRecords:
+                b = landRecords[key].getSubrecord('WNAM').data
             else:
                 b = bytearray(81)
             cellArray = PixelArray(b, 9, 9, 9)
@@ -411,7 +447,7 @@ def pluginToBMP(pluginPath, bmpDir):
     BMPFromPixelArray(bmpPath, mapArray)
     print('Converted WNAMs to BMP at "' + bmpPath + '"')
 
-def BMPToPlugin(masterPath, bmpPath, pluginPath):
+def BMPToPlugin(mastersDict, bmpPath, pluginPath):
     baseCoords = bmpPath.split('/')[-1].split('.')[0].split(',')
     if len(baseCoords) != 2:
         print('The image isn\'t named according to a cell coordinate.')
@@ -419,55 +455,103 @@ def BMPToPlugin(masterPath, bmpPath, pluginPath):
     x = int(baseCoords[0])
     y = int(baseCoords[1])
     imageWNAMs = WNAMsFromBMP(bmpPath, (x,y))
-    oldRecords = recordsFromPlugin(masterPath, ['TES3', 'LAND', 'LTEX'])
+    oldRecords = recordsFromPlugins(mastersDict, ['TES3', 'LAND', 'LTEX'])
 
     newRecords = {'TES3':{}}
-    if 'LTEX' in oldRecords:
-        newRecords['LTEX'] = oldRecords['LTEX']
     
     oldLandRecords = sanitizeLand(oldRecords['LAND'])
     newLandRecords = {}
-    for coords in oldLandRecords:
-        if coords in imageWNAMs:
-            oldLandRecord = oldLandRecords[coords]
-            oldWNAM = oldLandRecord.getSubrecord('WNAM')
-            imageWNAM = imageWNAMs[coords]
+
+    oldTexRecords = oldRecords['LTEX']
+    newTexRecords = {}
+
+    texPaths = []
+
+    version, = unpack('<f', pack('<f', 1.2))
+    masters = {
+        'Morrowind.esm':79837557
+    }
+    newMasters = {}
+
+    for coords, imageWNAM in imageWNAMs.items():
+        landRecord = None
+        if not coords in oldLandRecords:
+            if imageWNAM.data != pack('<81b', *([-128] * 81)):
+                x, y = coords.split(',')
+                coordSubrecord = Subrecord({'tag':'INTV', 'data':pack('<2i', int(x), int(y))})
+                landRecord = Record({
+                    'tag':'LAND',
+                    'flags':0,
+                    'subrecords':[
+                        coordSubrecord,
+                        defaultLAND.getSubrecord('DATA'),
+                        defaultLAND.getSubrecord('VNML'),
+                        defaultLAND.getSubrecord('VHGT'),
+                        imageWNAM
+                    ]
+                })
+        else:
+            landRecord = oldLandRecords[coords]
+            oldWNAM = landRecord.getSubrecord('WNAM')
             if oldWNAM.data != imageWNAM.data:
-                newRecord = oldLandRecord
-                newRecord.setSubrecord(imageWNAM)
-                newLandRecords[coords] = newRecord
+                landRecord.setSubrecord(imageWNAM)
+                masterName = landRecord.plugin['name']
+                masterPath = mastersDict[masterName.lower()]
+                masterHeader = oldRecords['TES3'][masterName.lower()]
+                masterVersion, = unpack('<f', masterHeader.getSubrecord('HEDR').data[0:4])
+                if masterVersion > version:
+                    version = masterVersion
+                    masters['Tribunal.esm'] = 4565686
+                    masters['Bloodmoon.esm'] = 9631798
+                if not masterName.lower() in [n.lower() for n in masters]:
+                    newMasters[masterName] = os.path.getsize(masterPath)
+
+                oldVTEX = landRecord.getSubrecord('VTEX')
+                if oldVTEX:
+                    newTexNums = []
+                    oldTexNums = list(unpack('<256H', oldVTEX.data))
+                    for index in oldTexNums:
+                        # Beware, VTEX indices are +1 from LTEX indices
+                        if index == 0:
+                            newTexNums.append(0)
+                        else:
+                            oldTexRecord = oldTexRecords[masterName + ' ' + str(index - 1)]
+                            path = oldTexRecord.getSubrecord('DATA').data
+                            path, = unpack('<' + str(len(path) - 1) + 'sx', path)
+                            if not path in texPaths:
+                                newTexRecord = Record({
+                                    'tag':'LTEX',
+                                    'flags':0,
+                                    'subrecords':[
+                                        {'tag':'NAME', 'data':pack('<4sx', str(len(texPaths)).zfill(4))},
+                                        {'tag':'INTV', 'data':pack('<I', len(texPaths))},
+                                        {'tag':'DATA', 'data':pack('<' + str(len(path)) + 'sx', path)}
+                                    ]
+                                })
+                                newTexRecords[newTexRecord.getName()] = newTexRecord
+                                texPaths.append(path)
+                                
+                            newTexNums.append(texPaths.index(path)+1)
+
+                    newVTEX = Subrecord({'tag':'VTEX', 'data':pack('<256H', *newTexNums)})
+                    landRecord.setSubrecord(newVTEX)
+                    
+        if landRecord:
+            newLandRecords[coords] = landRecord  
+
+    masters.update(newMasters)
+            
     if len(newLandRecords) <= 0:
         print('The heightmap was not altered. No plugin will be generated.')
     else:
+        if len(newTexRecords) > 0:
+            newRecords['LTEX'] = newTexRecords
+        
         newRecords['LAND'] = newLandRecords
         
-        masters = {
-            'Morrowind.esm':79837557
-        }
-        # Shan't compare Python's double-precision floats to plugins' single precision floats
-        baseVersion, = unpack('<f', pack('<f', 1.2))
-        version = baseVersion
-        masterHeader = oldRecords['TES3']['0']
-        masterVersion, = unpack('<f', masterHeader.getSubrecord('HEDR').data[0:4])
-        version = max(version, masterVersion)
-        if version > baseVersion:
-            masters['Tribunal.esm'] = 4565686
-            masters['Bloodmoon.esm'] = 9631798
-        
-        masterSize = os.path.getsize(masterPath)
-        masterName = masterPath.split('/')[-1]
-
-        isBase = False
-        for master in masters:
-            if masterName.lower() == master.lower():
-                isBase = True
-        
-        if not isBase:
-            masters[masterName] = masterSize
-
-        recordCount = len(newRecords['LAND'])
-        if 'LTEX' in newRecords:
-            recordCount += len(newRecords['LTEX'])
+        recordCount = 0
+        for recordTag, recordDict in newRecords.items():
+            recordCount += len(recordDict)
 
         headerRecord = Record({
             'tag':'TES3',
@@ -495,7 +579,7 @@ def verifyPath(path):
         return False
     filename = False
     extension = False
-    path = path.replace('\\', '/')
+    path = path.replace('\\', '/').replace('"', '')
     split = path.split('/')
     if '.' in split[-1]:
         filename = split[-1]
@@ -508,8 +592,79 @@ def verifyPath(path):
         print('Invalid path: "' + path + '"')
         return False
 
+def openMWPlugins(cfgpath):
+    dataFolders = []
+    contentFiles = {}
+    
+    with open(cfgpath, mode='r') as cfg:
+        for line in cfg:
+            line = line.strip()
+            splitLine = line.split('=')
+            if len(line) == 0 or line[0] == '#' or len(splitLine) != 2:
+                continue
+            if splitLine[0].lower() == 'data':
+                path = verifyPath(splitLine[1])
+                if path and not path[2]:
+                    dataFolders.append(path[1])
+            elif splitLine[0].lower() == 'content':
+                if splitLine[1].split('.')[-1].lower() in ['esp', 'esm', 'omwaddon']:
+                    contentFiles[splitLine[1].lower()] = ''
+
+    for dataPath in dataFolders:
+        for item in os.listdir(dataPath):
+            if item.lower() in contentFiles:
+                contentFiles[item.lower()] = dataPath + '/' + item
+
+    for file, path in contentFiles.items():
+        if path == '':
+            del contentFiles[file]
+
+    if len(contentFiles) > 0:
+        return contentFiles
+    else:
+        return False
+
+def MWPlugins(inipath):
+    masters = {}
+    plugins = {}
+    contentFiles = {}
+    masterDates = {}
+    pluginDates = {}
+    dataPath = ('/').join(inipath.split('/')[:-1]) + '/Data Files/'
+    
+    with open(inipath, mode='r') as ini:
+        for line in ini:
+            line = line.strip()
+            splitLine = line.split('=')
+            if len(line) == 0 or line[0] == ';' or len(splitLine) != 2:
+                continue
+            if splitLine[0].lower()[:8] == 'gamefile':
+                path = verifyPath(dataPath + splitLine[1])
+                
+                if path and path[2]:
+                    time = os.path.getmtime(path[0])
+                    if path[3] == 'esm':
+                        masters[path[2].lower()] = path[0]
+                        masterDates[path[2].lower()] = time
+                    elif path[3] == 'esp':
+                        plugins[path[2].lower()] = path[0]
+                        pluginDates[path[2].lower()] = time
+
+    masterDates = {k: v for k, v in sorted(masterDates.items(), key=lambda item: item[1])}
+    pluginDates = {k: v for k, v in sorted(pluginDates.items(), key=lambda item: item[1])}
+
+    for name in masterDates:
+        contentFiles[name] = masters[name]
+    for name in pluginDates:
+        contentFiles[name] = plugins[name]
+
+    if len(contentFiles) > 0:
+        return contentFiles
+    else:
+        return False       
+
 def main(argv):
-    usage = 'Usage: WNAMtool.py --extract -i [input plugin path] -b [bmp output dir] \n                   --repack  -i [input plugin path] -b [bmp image path] -o [output plugin path]'
+    usage = 'Usage: WNAMtool.py --extract -i [input plugin, openmw.cfg, or morrowind.ini path] -b [bmp output dir] \n                   --repack  -i [input plugin, openmw.cfg, or morrowind.ini path] -b [bmp image path] -o [output plugin path]'
 
     opts, args = getopt.getopt(argv, 'i:b:o:', longopts=['extract', 'repack'])
     d = {
@@ -527,15 +682,37 @@ def main(argv):
     i = verifyPath(d['-i'])
     b = verifyPath(d['-b'])
     o = verifyPath(d['-o'])
-        
+    
     if d['mode'] == '--extract':
-        if b and i and i[2] and i[3] in ['esp', 'esm']:
-            pluginToBMP(i[0], b[1])
-            return
+        if b and i and i[2]:
+            contentFiles = None
+            if i[3] in ['esp', 'esm', 'omwaddon']:
+                contentFiles = {i[2].lower():i[0]}
+            elif i[3] == 'cfg':
+                contentFiles = openMWPlugins(i[0])
+            elif i[3] == 'ini':
+                contentFiles = MWPlugins(i[0])
+            if contentFiles:
+                pluginsToBMP(contentFiles, b[1])
+                return
+        
     elif d['mode'] == '--repack':
-        if i and i[2] and i[3] in ['esp', 'esm'] and b and b[2] and b[3] == 'bmp' and o and o[2] and o[3] in ['esp', 'esm']:
-            BMPToPlugin(i[0], b[0], o[0])
-            return
+        if i and i[2] and b and b[2] and b[3] == 'bmp' and o and o[2] and o[3] in ['esp', 'esm', 'omwaddon']:
+            contentFiles = None
+            if i[3] in ['esp', 'esm', 'omwaddon']:
+                contentFiles = {i[2].lower():i[0]}
+            elif i[3] == 'cfg':
+                contentFiles = openMWPlugins(i[0])
+            elif i[3] == 'ini':
+                contentFiles = MWPlugins(i[0])
+            if contentFiles:
+                for name, path in contentFiles.items():
+                    if path == o[0]:
+                        del contentFiles[name]
+                        break
+                BMPToPlugin(contentFiles, b[0], o[0])
+                return
+            
     print(usage)
 
 main(sys.argv[1:])
