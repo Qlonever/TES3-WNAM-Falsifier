@@ -159,7 +159,7 @@ class Record():
         try:
             return self.subrecordsSorted[tag][index]
         except:
-            return False
+            return None
 
     def addSubrecord(self, subrecord):
         if not subrecord:
@@ -192,9 +192,23 @@ class Record():
                 if count == index:
                     self.subrecords[i] = rep
                     self.subrecordsSorted[rep.tag][count] = rep
-                    return
+                    return True
                 count += 1
-        return
+        return False
+
+    def delSubrecord(self, tag, index=0):
+        count = 0
+        for i in range(len(self.subrecords)):
+            subrecord = self.subrecords[i]
+            if subrecord.tag == tag:
+                if count == index:
+                    del self.subrecords[i]
+                    del self.subrecordsSorted[tag][count]
+                    if len(self.subrecordsSorted[tag]) <= 0:
+                        del self.subrecordsSorted[tag]
+                    return True
+                count += 1
+        return False
 
     # Used to replace records, or identify them easily
     def setId(self):
@@ -417,8 +431,8 @@ def sanitizeLand(records):
             flags = flags | 1
             record.setSubrecord(Subrecord({'tag':'DATA', 'data':pack('<I', flags)}))
             # Leaving these out doesn't cause any crashes
-            #record.setSubrecord(defaultLAND.getSubrecord('VNML'))
-            #record.setSubrecord(defaultLAND.getSubrecord('VHGT'))
+            record.setSubrecord(defaultLAND.getSubrecord('VNML'))
+            record.setSubrecord(defaultLAND.getSubrecord('VHGT'))
             record.setSubrecord(defaultLAND.getSubrecord('WNAM'))
             records[coords] = record
     return records
@@ -467,7 +481,11 @@ def pluginsToBMP(pluginList, bmpDir):
     BMPFromPixelArray(bmpPath, mapArray)
     return 'Converted ' + str(len(landRecords)) + ' WNAMs to BMP at "' + bmpPath + '"'
 
-def BMPToPlugin(mastersDict, bmpPath, pluginPath, noCells=False):
+def BMPToPlugin(mastersDict, bmpPath, pluginPath, noCells=False, keepSpec=False):
+    if not keepSpec:
+        defaultLAND.delSubrecord('VNML')
+        defaultLAND.delSubrecord('VHGT')
+        
     baseCoords = bmpPath.split('/')[-1].split('.')[0].split(',')
     if len(baseCoords) != 2:
         return 'The image isn\'t named according to a cell coordinate.'
@@ -501,8 +519,8 @@ def BMPToPlugin(mastersDict, bmpPath, pluginPath, noCells=False):
                     'subrecords':[
                         coordSubrecord,
                         defaultLAND.getSubrecord('DATA'),
-                        #defaultLAND.getSubrecord('VNML'),
-                        #defaultLAND.getSubrecord('VHGT'),
+                        defaultLAND.getSubrecord('VNML'),
+                        defaultLAND.getSubrecord('VHGT'),
                         imageWNAM
                     ]
                 })
@@ -697,11 +715,12 @@ def main(argv):
     response =    'Usage: WNAMtool.py extract -i <input plugin, openmw.cfg, or morrowind.ini path> -b [bmp output dir] [optional arguments]'
     response += '\n                   repack  -i <input plugin, openmw.cfg, or morrowind.ini path> -b <bmp image path> -o [output plugin path] [optional arguments]'
     response += '\nOptional arguments:'
-    response += '\n       [--nocells]: Applies to repacking; if not set, CELL records will be created for corresponding LANDs if they don\'t already exist.'
-    response += '\n       [--esm]:     Applies to extracting and repacking; will only read from/output master files. Used for compatibility with unmodified Morrowind.exe.'
+    response += '\n       [--nocells]:  Applies to repacking; if not set, CELL records will be created for corresponding LANDs if they don\'t already exist.'
+    response += '\n       [--esm]:      Applies to extracting and repacking; will only read from/output master files. Used for compatibility with unmodified Morrowind.exe.'
+    response += '\n       [--keepspec]: Applies to repacking; by default, VNML/VHGT are left out when possible, violating the plugin format. Set this to keep them in.'
     response += '\n       Arguments with parameters in brackets [] are also optional.'
 
-    opts, args = getopt.gnu_getopt(argv, 'i:b:o:', longopts=['nocells', 'esm'])
+    opts, args = getopt.gnu_getopt(argv, 'i:b:o:', longopts=['nocells', 'esm', 'keepspec'])
     d = {
         'mode':False,
         '-i':False,
@@ -743,7 +762,7 @@ def main(argv):
                 outputPath = o[0]
             elif o[0]:
                 outputPath = o[1] + '/' + outputPath
-            response = BMPToPlugin(contentFiles, b[0], outputPath, '--nocells' in d)
+            response = BMPToPlugin(contentFiles, b[0], outputPath, '--nocells' in d, '--keepspec' in d)
             
     print(response)
 

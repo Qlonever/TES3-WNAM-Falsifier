@@ -6,8 +6,9 @@ This is a Python script for directly editing the 9x9 heightmaps (WNAM) of landsc
 Usage: WNAMtool.py extract -i <input plugin, openmw.cfg, or morrowind.ini path> -b [bmp output dir] [optional arguments]
                    repack  -i <input plugin, openmw.cfg, or morrowind.ini path> -b <bmp image path> -o [output plugin path] [optional arguments]
 Optional arguments:
-       [--nocells]: Applies to repacking; if not set, CELL records will be created for corresponding LANDs if they don't already exist.
-       [--esm]:     Applies to extracting and repacking; will only read from/output master files. Used for compatibility with unmodified Morrowind.exe.
+       [--nocells]:  Applies to repacking; if not set, CELL records will be created for corresponding LANDs if they don't already exist.
+       [--esm]:      Applies to extracting and repacking; will only read from/output master files. Used for compatibility with unmodified Morrowind.exe.
+       [--keepspec]: Applies to repacking; by default, VNML/VHGT are left out when possible, violating the plugin format. Set this to keep them in.
        Arguments with parameters in brackets [] are also optional.
 ```
 
