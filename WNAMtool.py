@@ -428,6 +428,7 @@ def pluginsToBMP(pluginList, bmpDir):
     landRecords = sanitizeLand(landRecords)
     if len(landRecords) <= 0:
         return 'Couldn\'t find any LAND records in the provided plugin(s).'
+    
     # I hope nobody ever makes landmasses 100000 cells away from Vvardenfell
     left = 100000
     right = -100000
@@ -441,13 +442,17 @@ def pluginsToBMP(pluginList, bmpDir):
         right = max(x, right)
         bottom = min(y, bottom)
         top = max(y, top)
+        
     cellWidth = right - left + 1
     cellHeight = top - bottom + 1
+    
     width = cellWidth * 9
     height = cellHeight * 9
     padWidth = padLength(width, 4)
+    
     mapArray = (pack('<b', -128) * width + bytearray(padWidth-width)) * height
     mapArray = PixelArray(mapArray, width, height, padWidth)
+    
     for x in range(cellWidth):
         worldX = x + left
         for y in range(cellHeight):
@@ -460,9 +465,9 @@ def pluginsToBMP(pluginList, bmpDir):
                 mapArray.impose(cellArray, x*9, y*9)
     bmpPath = '/'.join(filter(None, [bmpDir, str(left) + ',' + str(bottom) + '.bmp']))
     BMPFromPixelArray(bmpPath, mapArray)
-    return 'Converted WNAMs to BMP at "' + bmpPath + '"'
+    return 'Converted ' + str(len(landRecords)) + ' WNAMs to BMP at "' + bmpPath + '"'
 
-def BMPToPlugin(mastersDict, bmpPath, pluginPath):
+def BMPToPlugin(mastersDict, bmpPath, pluginPath, noCells=False):
     baseCoords = bmpPath.split('/')[-1].split('.')[0].split(',')
     if len(baseCoords) != 2:
         return 'The image isn\'t named according to a cell coordinate.'
@@ -471,13 +476,10 @@ def BMPToPlugin(mastersDict, bmpPath, pluginPath):
     imageWNAMs = WNAMsFromBMP(bmpPath, (x,y))
     oldRecords = recordsFromPlugins(mastersDict, ['TES3', 'LAND', 'LTEX'])
 
-    newRecords = {'TES3':{}}
+    newRecords = {'TES3':{}, 'LTEX':{}, 'LAND':{}, 'CELL':{}}
     
     oldLandRecords = sanitizeLand(oldRecords['LAND'])
-    newLandRecords = {}
-
     oldTexRecords = oldRecords['LTEX']
-    newTexRecords = {}
 
     texPaths = []
 
@@ -504,6 +506,19 @@ def BMPToPlugin(mastersDict, bmpPath, pluginPath):
                         imageWNAM
                     ]
                 })
+
+                if not noCells:
+                    cellName = Subrecord({'tag':'NAME', 'data':bytearray(1)})
+                    cellData = Subrecord({'tag':'DATA', 'data':pack('<I2i', 2, int(x), int(y))})
+                    newRecords['CELL'][coords] = Record({
+                        'tag':'CELL',
+                        'flags':0,
+                        'subrecords':[
+                            cellName,
+                            cellData
+                        ]
+                    })
+                
         else:
             oldLandRecord = oldLandRecords[coords]
             oldWNAM = oldLandRecord.getSubrecord('WNAM')
@@ -543,7 +558,7 @@ def BMPToPlugin(mastersDict, bmpPath, pluginPath):
                                         {'tag':'DATA', 'data':pack('<' + str(len(path)) + 'sx', path)}
                                     ]
                                 })
-                                newTexRecords[newTexRecord.getName()] = newTexRecord
+                                newRecords['LTEX'][newTexRecord.getName()] = newTexRecord
                                 texPaths.append(path)
                                 
                             newTexNums.append(texPaths.index(path)+1)
@@ -552,18 +567,14 @@ def BMPToPlugin(mastersDict, bmpPath, pluginPath):
                     landRecord.setSubrecord(newVTEX)
                     
         if landRecord:
-            newLandRecords[coords] = landRecord  
+            newRecords['LAND'][coords] = landRecord  
 
     masters.update(newMasters)
-            
-    if len(newLandRecords) <= 0:
+
+    numChanged = len(newRecords['LAND'])
+    if numChanged <= 0:
         return 'The heightmap was not altered. No plugin will be generated.'
-    else:
-        if len(newTexRecords) > 0:
-            newRecords['LTEX'] = newTexRecords
-        
-        newRecords['LAND'] = newLandRecords
-        
+    else: 
         recordCount = 0
         for recordTag, recordDict in newRecords.items():
             recordCount += len(recordDict)
@@ -587,7 +598,7 @@ def BMPToPlugin(mastersDict, bmpPath, pluginPath):
                     record = newRecords[recordTag][recordName]
                     f.write(record.pack())
 
-        return 'Created new plugin at "' + pluginPath + '"'
+        return 'Generated WNAMs for ' + str(numChanged) + ' cells.\nCreated new plugin at "' + pluginPath + '"'
             
 def verifyPath(path):
     directory = ''
@@ -605,7 +616,7 @@ def verifyPath(path):
             path = False
     return [path, directory, filename, extension]
 
-def openMWPlugins(cfgpath):
+def openMWPlugins(cfgpath, esmOnly=False):
     dataFolders = []
     contentFiles = {}
     
@@ -620,7 +631,10 @@ def openMWPlugins(cfgpath):
                 if path and not path[2]:
                     dataFolders.append(path[1])
             elif splitLine[0].lower() == 'content':
-                if os.path.splitext(splitLine[1].lower())[1] in ['.esp', '.esm', '.omwaddon']:
+                validExtensions = ['.esm']
+                if not esmOnly:
+                    validExtensions += ['.esp', '.omwaddon']
+                if os.path.splitext(splitLine[1].lower())[1] in validExtensions:
                     contentFiles[splitLine[1].lower()] = ''
 
     for dataPath in dataFolders:
@@ -637,7 +651,7 @@ def openMWPlugins(cfgpath):
     else:
         return False
 
-def MWPlugins(inipath):
+def MWPlugins(inipath, esmOnly=False):
     masters = {}
     plugins = {}
     contentFiles = {}
@@ -668,8 +682,9 @@ def MWPlugins(inipath):
 
     for name in masterDates:
         contentFiles[name] = masters[name]
-    for name in pluginDates:
-        contentFiles[name] = plugins[name]
+    if not esmOnly:
+        for name in pluginDates:
+            contentFiles[name] = plugins[name]
 
     if len(contentFiles) > 0:
         return contentFiles
@@ -679,9 +694,14 @@ def MWPlugins(inipath):
 def main(argv):
     print('')
     
-    response = 'Usage: WNAMtool.py --extract -i <input plugin, openmw.cfg, or morrowind.ini path> -b [bmp output dir]\n                   --repack  -i <input plugin, openmw.cfg, or morrowind.ini path> -b <bmp image path> -o [output plugin path]\n       Arguments in brackets [] are optional.'
+    response =    'Usage: WNAMtool.py extract -i <input plugin, openmw.cfg, or morrowind.ini path> -b [bmp output dir] [optional arguments]'
+    response += '\n                   repack  -i <input plugin, openmw.cfg, or morrowind.ini path> -b <bmp image path> -o [output plugin path] [optional arguments]'
+    response += '\nOptional arguments:'
+    response += '\n       [--nocells]: Applies to repacking; if not set, CELL records will be created for corresponding LANDs if they don\'t already exist.'
+    response += '\n       [--esm]:     Applies to extracting and repacking; will only read from/output master files. Used for compatibility with unmodified Morrowind.exe.'
+    response += '\n       Arguments with parameters in brackets [] are also optional.'
 
-    opts, args = getopt.getopt(argv, 'i:b:o:', longopts=['extract', 'repack'])
+    opts, args = getopt.gnu_getopt(argv, 'i:b:o:', longopts=['nocells', 'esm'])
     d = {
         'mode':False,
         '-i':False,
@@ -689,47 +709,41 @@ def main(argv):
         '-o':False
     }
     for opt, arg in opts:
-        if opt in ['--extract', '--repack']:
-            d['mode'] = opt
-        else:
-            d[opt] = arg
+        d[opt] = arg
+
+    for arg in args:
+        if arg in ['extract', 'repack']:
+            d['mode'] = arg
 
     i = verifyPath(d['-i'])
     b = verifyPath(d['-b'])
     o = verifyPath(d['-o'])
+
+    contentFiles = None
+    if i[3] in ['.esp', '.esm', '.omwaddon']:
+        contentFiles = {i[2].lower():i[0]}
+    elif i[3] == '.cfg':
+        contentFiles = openMWPlugins(i[0], '--esm' in d)
+    elif i[3] == '.ini':
+        contentFiles = MWPlugins(i[0], '--esm' in d)
     
-    if d['mode'] == '--extract':
-        if i[2]:
-            contentFiles = None
-            if i[3] in ['.esp', '.esm', '.omwaddon']:
-                contentFiles = {i[2].lower():i[0]}
-            elif i[3] == '.cfg':
-                contentFiles = openMWPlugins(i[0])
-            elif i[3] == '.ini':
-                contentFiles = MWPlugins(i[0])
-            if contentFiles:
-                response = pluginsToBMP(contentFiles, b[1])
+    if d['mode'] == 'extract' and contentFiles:
+        response = pluginsToBMP(contentFiles, b[1])
         
-    elif d['mode'] == '--repack':
-        if i[2] and b[3] == '.bmp':
+    elif d['mode'] == 'repack' and contentFiles:
+        for name, path in contentFiles.items():
+            if path == o[0]:
+                del contentFiles[name]
+                break
+        if len(contentFiles) > 0 and b[3] == '.bmp':
             outputPath = 'WNAM_Falsified.esp'
+            if '--esm' in d:
+                outputPath = 'WNAM_Falsified.esm'
             if o[3] in ['.esp', '.esm', '.omwaddon']:
                 outputPath = o[0]
             elif o[0]:
                 outputPath = o[1] + '/' + outputPath
-            contentFiles = None
-            if i[3] in ['.esp', '.esm', '.omwaddon']:
-                contentFiles = {i[2].lower():i[0]}
-            elif i[3] == '.cfg':
-                contentFiles = openMWPlugins(i[0])
-            elif i[3] == '.ini':
-                contentFiles = MWPlugins(i[0])
-            if contentFiles:
-                for name, path in contentFiles.items():
-                    if path == o[0]:
-                        del contentFiles[name]
-                        break
-                response = BMPToPlugin(contentFiles, b[0], outputPath)
+            response = BMPToPlugin(contentFiles, b[0], outputPath, '--nocells' in d)
             
     print(response)
 
