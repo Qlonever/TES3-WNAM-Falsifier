@@ -162,6 +162,9 @@ class Record():
             return False
 
     def addSubrecord(self, subrecord):
+        if not subrecord:
+            return
+        
         if isinstance(subrecord, dict):
             subrecord = Subrecord(subrecord)
         
@@ -172,6 +175,9 @@ class Record():
         
 
     def setSubrecord(self, rep, index=0):
+        if not rep:
+            return
+        
         if isinstance(rep, dict):
             rep = Subrecord(rep)
             
@@ -403,11 +409,12 @@ def sanitizeLand(records):
     for coords in records:
         record = records[coords]
         if record.tag == 'LAND' and not record.getSubrecord('WNAM'):
-            flag, = unpack('<I', record.getSubrecord('DATA').data)
-            flag = flag | 1
-            record.setSubrecord(Subrecord({'tag':'DATA', 'data':pack('<I', flag)}))
-            record.setSubrecord(defaultLAND.getSubrecord('VNML'))
-            record.setSubrecord(defaultLAND.getSubrecord('VHGT'))
+            flags, = unpack('<I', record.getSubrecord('DATA').data)
+            flags = flags | 1
+            record.setSubrecord(Subrecord({'tag':'DATA', 'data':pack('<I', flags)}))
+            # Leaving these out doesn't cause any crashes
+            #record.setSubrecord(defaultLAND.getSubrecord('VNML'))
+            #record.setSubrecord(defaultLAND.getSubrecord('VHGT'))
             record.setSubrecord(defaultLAND.getSubrecord('WNAM'))
             records[coords] = record
     return records
@@ -416,8 +423,7 @@ def pluginsToBMP(pluginList, bmpDir):
     landRecords = recordsFromPlugins(pluginList, ['LAND'])['LAND']
     landRecords = sanitizeLand(landRecords)
     if len(landRecords) <= 0:
-        print('Plugin does not contain any valid LAND records.')
-        return
+        return 'Couldn\'t find any LAND records in the provided plugin(s).'
     # I hope nobody ever makes landmasses 100000 cells away from Vvardenfell
     left = 100000
     right = -100000
@@ -456,8 +462,7 @@ def pluginsToBMP(pluginList, bmpDir):
 def BMPToPlugin(mastersDict, bmpPath, pluginPath):
     baseCoords = bmpPath.split('/')[-1].split('.')[0].split(',')
     if len(baseCoords) != 2:
-        print('The image isn\'t named according to a cell coordinate.')
-        return False
+        return 'The image isn\'t named according to a cell coordinate.'
     x = int(baseCoords[0])
     y = int(baseCoords[1])
     imageWNAMs = WNAMsFromBMP(bmpPath, (x,y))
@@ -482,7 +487,7 @@ def BMPToPlugin(mastersDict, bmpPath, pluginPath):
     for coords, imageWNAM in imageWNAMs.items():
         landRecord = None
         if not coords in oldLandRecords:
-            if imageWNAM.data != pack('<81b', *([-128] * 81)):
+            if imageWNAM.data != bytearray(81):
                 x, y = coords.split(',')
                 coordSubrecord = Subrecord({'tag':'INTV', 'data':pack('<2i', int(x), int(y))})
                 landRecord = Record({
@@ -491,15 +496,16 @@ def BMPToPlugin(mastersDict, bmpPath, pluginPath):
                     'subrecords':[
                         coordSubrecord,
                         defaultLAND.getSubrecord('DATA'),
-                        defaultLAND.getSubrecord('VNML'),
-                        defaultLAND.getSubrecord('VHGT'),
+                        #defaultLAND.getSubrecord('VNML'),
+                        #defaultLAND.getSubrecord('VHGT'),
                         imageWNAM
                     ]
                 })
         else:
-            landRecord = oldLandRecords[coords]
-            oldWNAM = landRecord.getSubrecord('WNAM')
+            oldLandRecord = oldLandRecords[coords]
+            oldWNAM = oldLandRecord.getSubrecord('WNAM')
             if oldWNAM.data != imageWNAM.data:
+                landRecord = oldLandRecord
                 landRecord.setSubrecord(imageWNAM)
                 masterName = landRecord.plugin['name']
                 masterPath = mastersDict[masterName.lower()]
@@ -548,7 +554,7 @@ def BMPToPlugin(mastersDict, bmpPath, pluginPath):
     masters.update(newMasters)
             
     if len(newLandRecords) <= 0:
-        print('The heightmap was not altered. No plugin will be generated.')
+        return 'The heightmap was not altered. No plugin will be generated.'
     else:
         if len(newTexRecords) > 0:
             newRecords['LTEX'] = newTexRecords
