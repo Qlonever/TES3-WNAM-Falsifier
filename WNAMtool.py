@@ -241,7 +241,11 @@ class Record():
                 self.addSubrecord(subrecord)
         else:
             start = i.tell()
-            self.tag, size, self.flags = unpack('<4sI4xI', i.read(0x10))
+            info = i.read(0x10)
+            if not info:
+                self.passed = True
+                return
+            self.tag, size, self.flags = unpack('<4sI4xI', info)
             if tags and not self.tag in tags:
                 i.seek(size, 1)
                 self.passed = True
@@ -253,7 +257,7 @@ class Record():
                 self.addSubrecord(subrecord)
                 offset = i.tell()
             
-            self.plugin = {'name':i.name.split('/')[-1], 'offset':start}
+            self.plugin = {'name':os.path.basename(i.name), 'offset':start}
         self.setId()
 
 def padLength(length, pad):
@@ -592,15 +596,14 @@ def verifyPath(path):
     extension = ''
     if path:
         path = path.replace('\\', '/').replace('"', '')
-        split = path.split('/')
-        if '.' in split[-1]:
-            filename = split[-1]
-            extension = filename.split('.')[-1].lower()
-            del split[-1]
-        directory = '/'.join(split)
-        if not os.path.exists(directory):
+        if os.path.isfile(path):
+            filename = os.path.basename(path)
+            extension = os.path.splitext(path)[1].lower()
+            directory = os.path.dirname(path)
+        elif os.path.exists(path):
+            directory = path
+        else:
             path = False
-            directory = ''
     return [path, directory, filename, extension]
 
 def openMWPlugins(cfgpath):
@@ -618,7 +621,7 @@ def openMWPlugins(cfgpath):
                 if path and not path[2]:
                     dataFolders.append(path[1])
             elif splitLine[0].lower() == 'content':
-                if splitLine[1].split('.')[-1].lower() in ['esp', 'esm', 'omwaddon']:
+                if os.path.splitext(splitLine[1].lower())[1] in ['.esp', '.esm', '.omwaddon']:
                     contentFiles[splitLine[1].lower()] = ''
 
     for dataPath in dataFolders:
@@ -626,7 +629,7 @@ def openMWPlugins(cfgpath):
             if item.lower() in contentFiles:
                 contentFiles[item.lower()] = dataPath + '/' + item
 
-    for file, path in contentFiles.items():
+    for file, path in contentFiles.copy().items():
         if path == '':
             del contentFiles[file]
 
@@ -641,7 +644,7 @@ def MWPlugins(inipath):
     contentFiles = {}
     masterDates = {}
     pluginDates = {}
-    dataPath = ('/').join(inipath.split('/')[:-1]) + '/Data Files/'
+    dataPath = os.path.dirname(inipath) + '/Data Files/'
     
     with open(inipath, mode='r') as ini:
         for line in ini:
@@ -654,10 +657,10 @@ def MWPlugins(inipath):
                 
                 if path and path[2]:
                     time = os.path.getmtime(path[0])
-                    if path[3] == 'esm':
+                    if path[3] == '.esm':
                         masters[path[2].lower()] = path[0]
                         masterDates[path[2].lower()] = time
-                    elif path[3] == 'esp':
+                    elif path[3] == '.esp':
                         plugins[path[2].lower()] = path[0]
                         pluginDates[path[2].lower()] = time
 
@@ -699,28 +702,28 @@ def main(argv):
     if d['mode'] == '--extract':
         if i[2]:
             contentFiles = None
-            if i[3] in ['esp', 'esm', 'omwaddon']:
+            if i[3] in ['.esp', '.esm', '.omwaddon']:
                 contentFiles = {i[2].lower():i[0]}
-            elif i[3] == 'cfg':
+            elif i[3] == '.cfg':
                 contentFiles = openMWPlugins(i[0])
-            elif i[3] == 'ini':
+            elif i[3] == '.ini':
                 contentFiles = MWPlugins(i[0])
             if contentFiles:
                 response = pluginsToBMP(contentFiles, b[1])
         
     elif d['mode'] == '--repack':
-        if i[2] and b[3] == 'bmp':
+        if i[2] and b[3] == '.bmp':
             outputPath = 'WNAM_Falsified.esp'
-            if o[3] in ['esp', 'esm', 'omwaddon']:
+            if o[3] in ['.esp', '.esm', '.omwaddon']:
                 outputPath = o[0]
             elif o[0]:
                 outputPath = o[1] + '/' + outputPath
             contentFiles = None
-            if i[3] in ['esp', 'esm', 'omwaddon']:
+            if i[3] in ['.esp', '.esm', '.omwaddon']:
                 contentFiles = {i[2].lower():i[0]}
-            elif i[3] == 'cfg':
+            elif i[3] == '.cfg':
                 contentFiles = openMWPlugins(i[0])
-            elif i[3] == 'ini':
+            elif i[3] == '.ini':
                 contentFiles = MWPlugins(i[0])
             if contentFiles:
                 for name, path in contentFiles.items():
