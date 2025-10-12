@@ -441,12 +441,13 @@ def pluginsToBMP(pluginList, bmpDir):
         right = max(x, right)
         bottom = min(y, bottom)
         top = max(y, top)
-    cellWidth = right - left
-    cellHeight = top - bottom
+    cellWidth = right - left + 1
+    cellHeight = top - bottom + 1
     width = cellWidth * 9
     height = cellHeight * 9
     padWidth = padLength(width, 4)
-    mapArray = PixelArray(bytearray(padWidth * height), width, height, padWidth)
+    mapArray = (pack('<b', -128) * width + bytearray(padWidth-width)) * height
+    mapArray = PixelArray(mapArray, width, height, padWidth)
     for x in range(cellWidth):
         worldX = x + left
         for y in range(cellHeight):
@@ -455,10 +456,8 @@ def pluginsToBMP(pluginList, bmpDir):
             b = None
             if key in landRecords:
                 b = landRecords[key].getSubrecord('WNAM').data
-            else:
-                b = bytearray(81)
-            cellArray = PixelArray(b, 9, 9, 9)
-            mapArray.impose(cellArray, x*9, y*9)
+                cellArray = PixelArray(b, 9, 9, 9)
+                mapArray.impose(cellArray, x*9, y*9)
     bmpPath = '/'.join(filter(None, [bmpDir, str(left) + ',' + str(bottom) + '.bmp']))
     BMPFromPixelArray(bmpPath, mapArray)
     return 'Converted WNAMs to BMP at "' + bmpPath + '"'
@@ -491,7 +490,7 @@ def BMPToPlugin(mastersDict, bmpPath, pluginPath):
     for coords, imageWNAM in imageWNAMs.items():
         landRecord = None
         if not coords in oldLandRecords:
-            if imageWNAM.data != bytearray(81):
+            if imageWNAM.data != pack('<b', -128) * 81:
                 x, y = coords.split(',')
                 coordSubrecord = Subrecord({'tag':'INTV', 'data':pack('<2i', int(x), int(y))})
                 landRecord = Record({
