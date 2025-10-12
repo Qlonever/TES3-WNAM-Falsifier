@@ -449,7 +449,7 @@ def pluginsToBMP(pluginList, bmpDir):
                 b = bytearray(81)
             cellArray = PixelArray(b, 9, 9, 9)
             mapArray.impose(cellArray, x*9, y*9)
-    bmpPath = bmpDir + '/' + str(left) + ',' + str(bottom) + '.bmp'
+    bmpPath = '/'.join(filter(None, [bmpDir, str(left) + ',' + str(bottom) + '.bmp']))
     BMPFromPixelArray(bmpPath, mapArray)
     return 'Converted WNAMs to BMP at "' + bmpPath + '"'
 
@@ -581,22 +581,21 @@ def BMPToPlugin(mastersDict, bmpPath, pluginPath):
         return 'Created new plugin at "' + pluginPath + '"'
             
 def verifyPath(path):
-    if not path:
-        return False
+    directory = ''
     filename = False
     extension = ''
-    path = path.replace('\\', '/').replace('"', '')
-    split = path.split('/')
-    if '.' in split[-1]:
-        filename = split[-1]
-        extension = filename.split('.')[-1].lower()
-        del split[-1]
-    directory = '/'.join(split)
-    if os.path.exists(directory):
-        return [path, directory, filename, extension]
-    else:
-        print('Invalid path: "' + path + '"')
-        return False
+    if path:
+        path = path.replace('\\', '/').replace('"', '')
+        split = path.split('/')
+        if '.' in split[-1]:
+            filename = split[-1]
+            extension = filename.split('.')[-1].lower()
+            del split[-1]
+        directory = '/'.join(split)
+        if not os.path.exists(directory):
+            path = False
+            directory = ''
+    return [path, directory, filename, extension]
 
 def openMWPlugins(cfgpath):
     dataFolders = []
@@ -672,7 +671,7 @@ def MWPlugins(inipath):
 def main(argv):
     print('')
     
-    response = 'Usage: WNAMtool.py --extract -i [input plugin, openmw.cfg, or morrowind.ini path] -b [bmp output dir] \n                   --repack  -i [input plugin, openmw.cfg, or morrowind.ini path] -b [bmp image path] -o [output plugin path]'
+    response = 'Usage: WNAMtool.py --extract -i <input plugin, openmw.cfg, or morrowind.ini path> -b [bmp output dir]\n                   --repack  -i <input plugin, openmw.cfg, or morrowind.ini path> -b <bmp image path> -o [output plugin path]\n       Arguments in brackets [] are optional.'
 
     opts, args = getopt.getopt(argv, 'i:b:o:', longopts=['extract', 'repack'])
     d = {
@@ -692,7 +691,7 @@ def main(argv):
     o = verifyPath(d['-o'])
     
     if d['mode'] == '--extract':
-        if b and i and i[2]:
+        if i[2]:
             contentFiles = None
             if i[3] in ['esp', 'esm', 'omwaddon']:
                 contentFiles = {i[2].lower():i[0]}
@@ -704,10 +703,12 @@ def main(argv):
                 response = pluginsToBMP(contentFiles, b[1])
         
     elif d['mode'] == '--repack':
-        if i and i[2] and b and b[3] == 'bmp' and o:
-            outputPath = o[1] +'/WNAM_Falsified.esp'
+        if i[2] and b[3] == 'bmp':
+            outputPath = 'WNAM_Falsified.esp'
             if o[3] in ['esp', 'esm', 'omwaddon']:
                 outputPath = o[0]
+            elif o[0]:
+                outputPath = o[1] + '/' + outputPath
             contentFiles = None
             if i[3] in ['esp', 'esm', 'omwaddon']:
                 contentFiles = {i[2].lower():i[0]}

@@ -3,8 +3,9 @@
 This is a Python script for directly editing the 9x9 heightmaps (WNAM) of landscape records (LAND) in Morrowind plugins. This allows for customizing the global map.
 
 ```
-Usage: WNAMtool.py --extract -i [input plugin, openmw.cfg, or morrowind.ini path] -b [bmp output dir]
-                   --repack  -i [input plugin, openmw.cfg, or morrowind.ini path] -b [bmp image path] -o [output plugin path]
+Usage: WNAMtool.py --extract -i <input plugin, openmw.cfg, or morrowind.ini path> -b [bmp output dir]
+                   --repack  -i <input plugin, openmw.cfg, or morrowind.ini path> -b <bmp image path> -o [output plugin path]
+                   Arguments in brackets [] are optional.
 ```
 
 ## Extracting
