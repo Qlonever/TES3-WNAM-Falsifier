@@ -624,12 +624,14 @@ def verifyPath(path):
     extension = ''
     if path:
         path = path.replace('\\', '/').replace('"', '')
-        if os.path.isfile(path):
-            filename = os.path.basename(path)
-            extension = os.path.splitext(path)[1].lower()
-            directory = os.path.dirname(path)
-        elif os.path.exists(path):
+        splitPath = os.path.split(path)
+        splitName = os.path.splitext(splitPath[1])
+        if os.path.isdir(path):
             directory = path
+        elif os.path.isdir(splitPath[0]) and splitName[1]:
+            filename = splitPath[1]
+            extension = splitName[1]
+            directory = splitPath[0]
         else:
             path = False
     return [path, directory, filename, extension]
