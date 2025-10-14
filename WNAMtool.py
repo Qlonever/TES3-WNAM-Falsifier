@@ -4,13 +4,11 @@ import os
 import sys
 import getopt
 
-def sb(s):
-    return s.encode('ascii')
-
+# Automatically convert i/o strings/bytes to bytes/strings
 def pack(*args):
     args = list(args)
     for i in range(len(args)):
-        if isinstance(args[i], str):
+        if i != 0 and isinstance(args[i], str):
             args[i] = args[i].encode('ascii')
     return bytearray(struct.pack(*args))
 
@@ -20,6 +18,10 @@ def unpack(*args):
         if isinstance(ret[i], bytes):
             ret[i] = ret[i].decode('ascii')
     return tuple(ret)
+
+# Return nearest multiple of pad >= length
+def padLength(length, pad):
+    return int(pad * math.ceil(length/pad))
 
 class ColorTable():
 
@@ -38,6 +40,17 @@ class ColorTable():
             i *= 4
             v.append(list(b[i:i+4]))
         return v
+
+    def r(self, index):
+        return self.value[index][0]
+    def g(self, index):
+        return self.value[index][1]
+    def b(self, index):
+        return self.value[index][2]
+    def a(self, index):
+        return self.value[index][3]
+    def rgba(self, index):
+        return self.value[index]
 
     def __init__(self, i):
         if isinstance(i, (bytes, bytearray)):
@@ -104,6 +117,23 @@ class PixelArray():
             self.size = len(i)
             self.value = i
 
+# Record dict structure:
+#{
+#    'tag': 4 character string,
+#    'flags': int containing bit flags,
+#    'subrecords': [
+#        subrecord,
+#        ...
+#    ]
+#}
+#
+# Subrecord structure:
+#
+#{
+#    'tag': 4 character string,
+#    'data': byte data of subrecord
+#}
+
 class Subrecord():
     
     def pack(self):
@@ -122,23 +152,6 @@ class Subrecord():
         else:
             self.tag, size = unpack('<4sI', i.read(8))
             self.data = bytearray(i.read(size))
-
-# Record dict structure:
-#{
-#    'tag': 4 character string,
-#    'flags': int containing bit flags,
-#    'subrecords': [
-#        subrecord,
-#        ...
-#    ]
-#}
-#
-# Subrecord structure:
-#
-#{
-#    'tag': 4 character string,
-#    'data': byte data of subrecord
-#}
 
 class Record():
 
@@ -274,21 +287,18 @@ class Record():
             self.plugin = {'name':os.path.basename(i.name), 'offset':start}
         self.setId()
 
-def padLength(length, pad):
-    return int(pad * math.ceil(length/pad))
 
-def createPalette(unsigned=True):
-    palette = []
-    for i in range(256):
-        if unsigned:
-            if i >= 128:
-                i -= 128
-            else:
-                i += 128
-        palette.append([i, i, i, 0])
-    return palette
+######## BMP/image handling ########
 
-header = {
+
+heightPalette = []
+for i in range(128, 256):
+    heightPalette.append([i, i, i, 0])
+for i in range(128):
+    heightPalette.append([i, i, i, 0])
+heightPalette = ColorTable(heightPalette)
+
+baseBMPheader = {
     'Signature':        {'format': '<2s', 'value': 'BM', 'error': 'Not a valid .BMP file.'},
     'FileSize':         {'format': '<I', 'value': 0x04A2},
     'Reserved':         {'format': '<I', 'value': 0x00},
@@ -306,34 +316,40 @@ header = {
     'ImportantColors':  {'format': '<I', 'value': 0x0100},
 }
 
-def parseHeader(b):
+def parseBMPHeader(f):
     offset = 0
-    for item in header:
-        itemFormat = header[item]['format']
-        default = header[item]['value']
+    header = {}
+    for itemName, item in baseBMPheader.items():
+        itemFormat = item['format']
+        default = item['value']
         size = struct.calcsize(itemFormat)
-        itemBytes = b[offset:offset+size]
+        itemBytes = f.read(size)
         data, = unpack(itemFormat, itemBytes)
 
-        if data != default and 'error' in header[item]:
+        if data != default and 'error' in item:
             print(header[item]['error'])
             return False
-            
-        header[item]['value'] = data
+
+        header[itemName] = {'format':itemFormat, 'value':data}
         offset += size
+    return header
 
 def WNAMsFromBMP(bmpPath, coords):
     pixelArray = None
     with open(bmpPath, mode='rb') as img:
-        if parseHeader(img.read(0x36)) == False:
+        header = parseBMPHeader(img)
+        if not header:
             return False
+        
         palette = ColorTable(img.read(header['ColorsUsed']['value'] * 4))
         size = header['ImageSize']['value']
         width = header['Width']['value']
         height = header['Height']['value']
+        
         if width % 9 > 0 or height % 9 > 0:
             print('Image dimensions must be divisible by 9.')
             return False
+        
         padWidth = size / height
         if size == 0:
             # We'll assume that image editors pad rows to multiples of 4 bytes
@@ -342,14 +358,14 @@ def WNAMsFromBMP(bmpPath, coords):
 
         pixelData = img.read(size)
         b = bytearray()
-        # I wish I could rely on image editors preserving color indices
+        # Image editors cannot be relied upon to preserve color tables
         for pixel in pixelData:
-            value = palette.value[pixel][0]
-            if value >= 128:
-                value -= 128
+            red = palette.r(pixel)
+            if red >= 128:
+                red -= 128
             else:
-                value += 128
-            b.append(value)
+                red += 128
+            b.append(red)
         pixelArray = PixelArray(b, width, height, padWidth)
     
     WNAMs = {}
@@ -368,24 +384,26 @@ def WNAMsFromBMP(bmpPath, coords):
 
 def BMPFromPixelArray(bmpPath, pixelArray):
     b = bytearray()
-    for item in header:
-        itemFormat = header[item]['format']
-        default = header[item]['value']
-        value = default
-        if item == 'FileSize':
+    for itemName, item in baseBMPheader.items():
+        itemFormat = item['format']
+        value = item['value']
+        if itemName == 'FileSize':
             value = 0x436 + pixelArray.height * pixelArray.padWidth
-        elif item == 'Width':
+        elif itemName == 'Width':
             value = pixelArray.width
-        elif item == 'Height':
+        elif itemName == 'Height':
             value = pixelArray.height
-        elif item == 'ImageSize':
+        elif itemName == 'ImageSize':
             value = pixelArray.height * pixelArray.padWidth
         b += pack(itemFormat, value)
-    palette = createPalette()
-    b += ColorTable(palette).to_bytes()
+    b += heightPalette.to_bytes()
     b += pixelArray.value
     with open(bmpPath, mode='wb') as img:
         img.write(b)
+
+
+######## Plugin/record handling ########
+        
 
 def recordsFromPlugins(pluginDict, recordTags=False):
     records = {'TES3':{}}
@@ -411,6 +429,18 @@ def recordsFromPlugins(pluginDict, recordTags=False):
     print('')
     return records
 
+# Takes records as dictionary:
+# {
+#   'TAG':[Record, ...],
+#   ...
+# {
+def writePlugin(pluginPath, records):
+    with open(pluginPath, mode='wb') as f:
+        for recordTag in records:
+            for recordName in records[recordTag]:
+                record = records[recordTag][recordName]
+                f.write(record.pack())
+
 defaultLAND = Record({
     'tag':'LAND',
     'flags':0,
@@ -430,40 +460,42 @@ def sanitizeLand(records):
             flags, = unpack('<I', record.getSubrecord('DATA').data)
             flags = flags | 1
             record.setSubrecord(Subrecord({'tag':'DATA', 'data':pack('<I', flags)}))
-            # Leaving these out doesn't cause any crashes
             record.setSubrecord(defaultLAND.getSubrecord('VNML'))
             record.setSubrecord(defaultLAND.getSubrecord('VHGT'))
             record.setSubrecord(defaultLAND.getSubrecord('WNAM'))
             records[coords] = record
     return records
 
+
+######## Main mode functions ########
+
+
 def pluginsToBMP(pluginList, bmpDir):
     landRecords = recordsFromPlugins(pluginList, ['LAND'])['LAND']
     landRecords = sanitizeLand(landRecords)
     if len(landRecords) <= 0:
         return 'Couldn\'t find any LAND records in the provided plugin(s).'
-    
-    # I hope nobody ever makes landmasses 100000 cells away from Vvardenfell
-    left = 100000
-    right = -100000
-    bottom = 100000
-    top = -100000
+
+    # Calculate bounding rectangle surrounding all LANDs
+    left = right = top = bottom = None
     for coords in landRecords:
         coords = coords.split(',')
         x = int(coords[0])
         y = int(coords[1])
-        left = min(x, left)
-        right = max(x, right)
-        bottom = min(y, bottom)
-        top = max(y, top)
-        
+        left = min(x, left or x)
+        right = max(x, right or x)
+        bottom = min(y, bottom or y)
+        top = max(y, top or y)
+
+    # Actual width/height are 1 more than bounding dimensions
     cellWidth = right - left + 1
     cellHeight = top - bottom + 1
     
     width = cellWidth * 9
     height = cellHeight * 9
     padWidth = padLength(width, 4)
-    
+
+    # Initialize image as seafloor value, which is -128
     mapArray = (pack('<b', -128) * width + bytearray(padWidth-width)) * height
     mapArray = PixelArray(mapArray, width, height, padWidth)
     
@@ -477,31 +509,39 @@ def pluginsToBMP(pluginList, bmpDir):
                 b = landRecords[key].getSubrecord('WNAM').data
                 cellArray = PixelArray(b, 9, 9, 9)
                 mapArray.impose(cellArray, x*9, y*9)
-    bmpPath = '/'.join(filter(None, [bmpDir, str(left) + ',' + str(bottom) + '.bmp']))
+    if bmpDir:
+        bmpDir += '/'
+    bmpPath = bmpDir + str(left) + ',' + str(bottom) + '.bmp'
     BMPFromPixelArray(bmpPath, mapArray)
     return 'Converted ' + str(len(landRecords)) + ' WNAMs to BMP at "' + bmpPath + '"'
 
 def BMPToPlugin(mastersDict, bmpPath, pluginPath, noCells=False, keepSpec=False):
+    # Leaving these out is technically wrong but doesn't cause any problems
     if not keepSpec:
         defaultLAND.delSubrecord('VNML')
         defaultLAND.delSubrecord('VHGT')
         
-    baseCoords = bmpPath.split('/')[-1].split('.')[0].split(',')
-    if len(baseCoords) != 2:
-        return 'The image isn\'t named according to a cell coordinate.'
-    x = int(baseCoords[0])
-    y = int(baseCoords[1])
+    baseCoords = os.path.splitext(os.path.basename(bmpPath))[0].split(',')
+    x = None
+    y = None
+    try:
+        x = int(baseCoords[0])
+        y = int(baseCoords[1])
+    except:
+        return 'The image isn\'t named according to a cell coordinate. [x,y]'
+    
     imageWNAMs = WNAMsFromBMP(bmpPath, (x,y))
+    
     oldRecords = recordsFromPlugins(mastersDict, ['TES3', 'LAND', 'LTEX'])
-
     newRecords = {'TES3':{}, 'LTEX':{}, 'LAND':{}, 'CELL':{}}
     
     oldLandRecords = sanitizeLand(oldRecords['LAND'])
     oldTexRecords = oldRecords['LTEX']
-
     texPaths = []
 
     version, = unpack('<f', pack('<f', 1.2))
+    # Use capitalized filenames here so MAST subrecords will match plugins used
+    # Use lowercase names elsewhere since plugins overwrite each other case-insensitively
     masters = {
         'Morrowind.esm':79837557
     }
@@ -509,6 +549,7 @@ def BMPToPlugin(mastersDict, bmpPath, pluginPath, noCells=False, keepSpec=False)
 
     for coords, imageWNAM in imageWNAMs.items():
         landRecord = None
+        # New landscapes not from plugins
         if not coords in oldLandRecords:
             if imageWNAM.data != pack('<b', -128) * 81:
                 x, y = coords.split(',')
@@ -525,6 +566,9 @@ def BMPToPlugin(mastersDict, bmpPath, pluginPath, noCells=False, keepSpec=False)
                     ]
                 })
 
+                # Morrowind.exe won't display WNAMs for grid squares without CELL records
+                # OpenMW won't expand the map for grid squares without CELL records
+                # However, including these prevents automatic fish spawning
                 if not noCells:
                     cellName = Subrecord({'tag':'NAME', 'data':bytearray(1)})
                     cellData = Subrecord({'tag':'DATA', 'data':pack('<I2i', 2, int(x), int(y))})
@@ -536,13 +580,17 @@ def BMPToPlugin(mastersDict, bmpPath, pluginPath, noCells=False, keepSpec=False)
                             cellData
                         ]
                     })
-                
+
+        # Pre-existing landscapes from plugins
         else:
             oldLandRecord = oldLandRecords[coords]
             oldWNAM = oldLandRecord.getSubrecord('WNAM')
             if oldWNAM.data != imageWNAM.data:
                 landRecord = oldLandRecord
                 landRecord.setSubrecord(imageWNAM)
+                
+                # Add dependencies for plugins whose WNAMs were changed
+                # Base game/expansion dependencies are added automatically
                 masterName = landRecord.plugin['name']
                 masterPath = mastersDict[masterName.lower()]
                 masterHeader = oldRecords['TES3'][masterName.lower()]
@@ -554,23 +602,27 @@ def BMPToPlugin(mastersDict, bmpPath, pluginPath, noCells=False, keepSpec=False)
                 if not masterName.lower() in [n.lower() for n in masters]:
                     newMasters[masterName] = os.path.getsize(masterPath)
 
+                # Handle land textures
                 oldVTEX = landRecord.getSubrecord('VTEX')
                 if oldVTEX:
                     newTexNums = []
                     oldTexNums = list(unpack('<256H', oldVTEX.data))
                     for index in oldTexNums:
                         # Beware, VTEX indices are +1 from LTEX indices
+                        # Index 0 always denotes default land texture
                         if index == 0:
                             newTexNums.append(0)
                         else:
                             oldTexRecord = oldTexRecords[masterName + ' ' + str(index - 1)]
                             path = oldTexRecord.getSubrecord('DATA').data
                             path, = unpack('<' + str(len(path) - 1) + 'sx', path)
+                            # Only keep one LTEX for each land texture, even if it exists in multiple plugins
                             if not path in texPaths:
                                 newTexRecord = Record({
                                     'tag':'LTEX',
                                     'flags':0,
                                     'subrecords':[
+                                        # Things break if LTEX don't have unique names
                                         {'tag':'NAME', 'data':pack('<4sx', str(len(texPaths)).zfill(4))},
                                         {'tag':'INTV', 'data':pack('<I', len(texPaths))},
                                         {'tag':'DATA', 'data':pack('<' + str(len(path)) + 'sx', path)}
@@ -587,6 +639,7 @@ def BMPToPlugin(mastersDict, bmpPath, pluginPath, noCells=False, keepSpec=False)
         if landRecord:
             newRecords['LAND'][coords] = landRecord  
 
+    # Do this here so Tribunal/Bloodmoon dependencies come immediately after Morrowind.esm
     masters.update(newMasters)
 
     numChanged = len(newRecords['LAND'])
@@ -600,6 +653,7 @@ def BMPToPlugin(mastersDict, bmpPath, pluginPath, noCells=False, keepSpec=False)
         headerRecord = Record({
             'tag':'TES3',
             'flags':0,
+            # Consider adding command-line option for setting version/author/description
             'subrecords':[{'tag':'HEDR', 'data':pack('<fI32s256sI', version, 0, '', '', recordCount)}]
         })
 
@@ -610,31 +664,32 @@ def BMPToPlugin(mastersDict, bmpPath, pluginPath, noCells=False, keepSpec=False)
 
         newRecords['TES3']['0'] = headerRecord
 
-        with open(pluginPath, mode='wb') as f:
-            for recordTag in newRecords:
-                for recordName in newRecords[recordTag]:
-                    record = newRecords[recordTag][recordName]
-                    f.write(record.pack())
+        writePlugin(pluginPath, newRecords)
 
         return 'Generated WNAMs for ' + str(numChanged) + ' cells.\nCreated new plugin at "' + pluginPath + '"'
-            
-def verifyPath(path):
+
+
+######## User input ########
+
+
+def verifyPath(path, fileShouldExist=True):
     directory = ''
     filename = False
     extension = ''
     if path:
-        path = path.replace('\\', '/').replace('"', '')
+        path = path.strip().replace('\\', '/').replace('"', '')
         splitPath = os.path.split(path)
         splitName = os.path.splitext(splitPath[1])
         if os.path.isdir(path):
             directory = path
         elif os.path.isdir(splitPath[0]) and splitName[1]:
-            filename = splitPath[1]
-            extension = splitName[1]
             directory = splitPath[0]
+            if (not fileShouldExist) or os.path.isfile(path):
+                filename = splitPath[1]
+                extension = splitName[1]
         else:
             path = False
-    return [path, directory, filename, extension]
+    return [path, directory, filename, extension]     
 
 def openMWPlugins(cfgpath, esmOnly=False):
     dataFolders = []
@@ -655,6 +710,7 @@ def openMWPlugins(cfgpath, esmOnly=False):
                 if not esmOnly:
                     validExtensions += ['.esp', '.omwaddon']
                 if os.path.splitext(splitLine[1].lower())[1] in validExtensions:
+                    # Store lowercase plugin names since plugins overwrite each other case-insensitively
                     contentFiles[splitLine[1].lower()] = ''
 
     for dataPath in dataFolders:
@@ -736,8 +792,8 @@ def main(argv):
         if arg in ['extract', 'repack']:
             d['mode'] = arg
 
-    i = verifyPath(d['-i'])
-    b = verifyPath(d['-b'])
+    i = verifyPath(d['-i'], True)
+    b = verifyPath(d['-b'], d['mode'] == 'repack')
     o = verifyPath(d['-o'])
 
     contentFiles = None
