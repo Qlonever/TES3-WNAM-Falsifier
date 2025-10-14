@@ -158,7 +158,7 @@ class Subrecord():
         return info + self.data
 
     def __repr__(self):
-        return self.tag + ': ' + str(self.data)
+        return '{}: {:X}\n'.format(self.tag, self.data)
 
     def __init__(self, i):
         if not i:
@@ -247,26 +247,21 @@ class Record():
                 self.id = self.plugin['name'].lower()
         elif self.tag == 'LAND':
             x, y = unpack('<2i', (self.getSubrecord('INTV').data))
-            self.id = str(x) + ',' + str(y)
+            self.id = '{:d},{:d}'.format(x, y)
         elif self.tag == 'LTEX':
             index, = unpack('<I', self.getSubrecord('INTV').data)
-            if hasattr(self, 'plugin'):
-                self.id = self.plugin['name'] + ' '
-            else:
-                self.id = ''
-            self.id += str(index)
+            self.id = '{} {}'.format(self.plugin['name'], str(index))
 
-    def getName(self):
+    def setName(self):
         if hasattr(self, 'id'):
-            return self.id
-        return self.plugin['name'] + ' ' + str(self.plugin['offset'])
+            self.name = self.id
+        else:
+            self.name = '{} {:X}'.format(self.plugin['name'], self.plugin['offset'])
 
     def __repr__(self):
-        text = self.tag + ': \n'
-        text += 'flags: ' + str(self.flags) + '\n'
-        text += 'subrecords: \n'
+        text = '{}:\nflags: {:b}\nsubrecords:\n'.format(self.tag, self.flags)
         for subrecord in self.subrecords:
-            text += repr(subrecord) +'\n'
+            text += repr(subrecord)
 
         return text
 
@@ -281,11 +276,13 @@ class Record():
         if isinstance(i, dict):
             self.tag = i['tag']
             self.flags = i['flags']
+            self.plugin = {'name':'New', 'offset':False}
             for subrecord in i['subrecords']:
                 self.addSubrecord(subrecord)
         else:
             start = i.tell()
             info = i.read(0x10)
+            self.plugin = {'name':os.path.basename(i.name), 'offset':start}
             if not info:
                 self.passed = True
                 return
@@ -301,8 +298,8 @@ class Record():
                 self.addSubrecord(subrecord)
                 offset = i.tell()
             
-            self.plugin = {'name':os.path.basename(i.name), 'offset':start}
         self.setId()
+        self.setName()
 
 
 ######## BMP/image handling ########
@@ -392,7 +389,7 @@ def WNAMsFromBMP(bmpPath, coords):
 
     for x in range(cellWidth):
         for y in range(cellHeight):
-            key = str(coords[0]+x) + ',' + str(coords[1]+y)
+            key = '{:d},{:d}'.format(coords[0]+x, coords[1]+y)
             data = pixelArray.crop(x*9,y*9,9,9).value
             subrecord = Subrecord({'tag':'WNAM', 'data':data})
             WNAMs[key] = subrecord
@@ -428,9 +425,9 @@ def recordsFromPlugins(pluginDict, recordTags=False):
         with open(pluginPath, mode='rb') as f:
             header = Record(f)
             recordCount, = unpack('<296xI', header.getSubrecord('HEDR').data)
-            records['TES3'][header.getName()] = header
+            records['TES3'][header.name] = header
 
-            print('Reading ' + str(recordCount) + ' records from ' + pluginName + '... ', end='')
+            print('Reading {:d} records from {}... '.format(recordCount, pluginName), end='')
             
             for num in range(recordCount):
                 record = Record(f, recordTags)
@@ -438,7 +435,7 @@ def recordsFromPlugins(pluginDict, recordTags=False):
                     if not record.tag in records:
                         records[record.tag] = {}
                             
-                    key = record.getName()
+                    key = record.name
                     records[record.tag][key] = record
 
             print('Done.')
@@ -526,11 +523,10 @@ def pluginsToBMP(pluginList, bmpDir):
                 b = landRecords[key].getSubrecord('WNAM').data
                 cellArray = PixelArray(b, 9, 9, 9)
                 mapArray.impose(cellArray, x*9, y*9)
-    if bmpDir:
-        bmpDir += '/'
-    bmpPath = bmpDir + str(left) + ',' + str(bottom) + '.bmp'
+    bmpName = '{:d},{:d}.bmp'.format(left, bottom)
+    bmpPath = os.path.join(bmpDir, bmpName)
     BMPFromPixelArray(bmpPath, mapArray)
-    return 'Converted ' + str(len(landRecords)) + ' WNAMs to BMP at "' + bmpPath + '"'
+    return 'Converted {:d} WNAMs to BMP at "{}"'.format(len(landRecords), bmpPath)
 
 def BMPToPlugin(mastersDict, bmpPath, pluginPath, noCells=False, keepSpec=False):
     # Leaving these out is technically wrong but doesn't cause any problems
@@ -640,12 +636,12 @@ def BMPToPlugin(mastersDict, bmpPath, pluginPath, noCells=False, keepSpec=False)
                                     'flags':0,
                                     'subrecords':[
                                         # Things break if LTEX don't have unique names
-                                        {'tag':'NAME', 'data':pack('<4sx', str(len(texPaths)).zfill(4))},
+                                        {'tag':'NAME', 'data':pack('<#sx', 'WNAMFalsified{:d}'.format(len(texPaths)))},
                                         {'tag':'INTV', 'data':pack('<I', len(texPaths))},
-                                        {'tag':'DATA', 'data':pack('<' + str(len(path)) + 'sx', path)}
+                                        {'tag':'DATA', 'data':pack('<#sx', path)}
                                     ]
                                 })
-                                newRecords['LTEX'][newTexRecord.getName()] = newTexRecord
+                                newRecords['LTEX'][newTexRecord.name] = newTexRecord
                                 texPaths.append(path)
                                 
                             newTexNums.append(texPaths.index(path)+1)
@@ -683,7 +679,7 @@ def BMPToPlugin(mastersDict, bmpPath, pluginPath, noCells=False, keepSpec=False)
 
         writePlugin(pluginPath, newRecords)
 
-        return 'Generated WNAMs for ' + str(numChanged) + ' cells.\nCreated new plugin at "' + pluginPath + '"'
+        return 'Generated WNAMS for {:d} cells.\nCreated new plugin at "{}"'.format(numChanged, pluginPath)
 
 
 ######## User input ########
@@ -694,12 +690,12 @@ def verifyPath(path, fileShouldExist=True):
     filename = False
     extension = ''
     if path:
-        path = path.strip().replace('\\', '/').replace('"', '')
+        path = path.strip().replace('"', '')
         splitPath = os.path.split(path)
         splitName = os.path.splitext(splitPath[1])
         if os.path.isdir(path):
             directory = path
-        elif os.path.isdir(splitPath[0]) and splitName[1]:
+        elif (not splitPath[0] or os.path.isdir(splitPath[0])) and splitName[1]:
             directory = splitPath[0]
             if (not fileShouldExist) or os.path.isfile(path):
                 filename = splitPath[1]
@@ -733,7 +729,7 @@ def openMWPlugins(cfgpath, esmOnly=False):
     for dataPath in dataFolders:
         for item in os.listdir(dataPath):
             if item.lower() in contentFiles:
-                contentFiles[item.lower()] = dataPath + '/' + item
+                contentFiles[item.lower()] = os.path.join(dataPath, item)
 
     for file, path in contentFiles.copy().items():
         if path == '':
@@ -744,22 +740,22 @@ def openMWPlugins(cfgpath, esmOnly=False):
     else:
         return False
 
-def MWPlugins(inipath, esmOnly=False):
+def MWPlugins(iniPath, esmOnly=False):
     masters = {}
     plugins = {}
     contentFiles = {}
     masterDates = {}
     pluginDates = {}
-    dataPath = os.path.dirname(inipath) + '/Data Files/'
+    dataDir = os.path.join(os.path.dirname(iniPath), 'Data Files')
     
-    with open(inipath, mode='r') as ini:
+    with open(iniPath, mode='r') as ini:
         for line in ini:
             line = line.strip()
             splitLine = line.split('=')
             if len(line) == 0 or line[0] == ';' or len(splitLine) != 2:
                 continue
             if splitLine[0].lower()[:8] == 'gamefile':
-                path = verifyPath(dataPath + splitLine[1])
+                path = verifyPath(os.path.join(dataDir, splitLine[1]))
                 
                 if path and path[2]:
                     time = os.path.getmtime(path[0])
@@ -811,7 +807,7 @@ def main(argv):
 
     i = verifyPath(d['-i'], True)
     b = verifyPath(d['-b'], d['mode'] == 'repack')
-    o = verifyPath(d['-o'])
+    o = verifyPath(d['-o'], False)
 
     contentFiles = None
     if i[3] in ['.esp', '.esm', '.omwaddon']:
@@ -836,7 +832,7 @@ def main(argv):
             if o[3] in ['.esp', '.esm', '.omwaddon']:
                 outputPath = o[0]
             elif o[0]:
-                outputPath = o[1] + '/' + outputPath
+                outputPath = os.path.join(o[1], outputPath)
             response = BMPToPlugin(contentFiles, b[0], outputPath, '--nocells' in d, '--keepspec' in d)
             
     print(response)
