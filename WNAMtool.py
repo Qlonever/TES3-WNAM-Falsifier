@@ -5,14 +5,31 @@ import sys
 import getopt
 
 # Automatically convert i/o strings/bytes to bytes/strings
+# Allow variable string length
 def pack(*args):
     args = list(args)
+    fmt = list(args.pop(0))
+    f = 0
     for i in range(len(args)):
-        if i != 0 and isinstance(args[i], str):
-            args[i] = args[i].encode('ascii')
+        arg = args[i]
+        if isinstance(arg, str):
+            args[i] = arg.encode('ascii')
+            f = fmt.index('s', f+1)
+            if fmt[f-1] == '#':
+                fmt[f-1] = str(len(arg))
+    args.insert(0, ''.join(fmt))
     return bytearray(struct.pack(*args))
 
 def unpack(*args):
+    args = list(args)
+    fmt = list(args[0])
+    # Account for 1 string of variable length per byte input
+    if '#' in fmt:
+        index = fmt.index('#')
+        sizeOther = ''.join(fmt[:index] + fmt[index+2:])
+        sizeOther = struct.calcsize(sizeOther)
+        fmt[index] = str(len(args[1]) - sizeOther)
+        args[0] = ''.join(fmt)
     ret = list(struct.unpack(*args))
     for i in range(len(ret)):
         if isinstance(ret[i], bytes):
@@ -615,7 +632,7 @@ def BMPToPlugin(mastersDict, bmpPath, pluginPath, noCells=False, keepSpec=False)
                         else:
                             oldTexRecord = oldTexRecords[masterName + ' ' + str(index - 1)]
                             path = oldTexRecord.getSubrecord('DATA').data
-                            path, = unpack('<' + str(len(path) - 1) + 'sx', path)
+                            path, = unpack('<#sx', path)
                             # Only keep one LTEX for each land texture, even if it exists in multiple plugins
                             if not path in texPaths:
                                 newTexRecord = Record({
@@ -659,7 +676,7 @@ def BMPToPlugin(mastersDict, bmpPath, pluginPath, noCells=False, keepSpec=False)
 
         for master in masters:
             size = masters[master]
-            headerRecord.addSubrecord({'tag':'MAST', 'data':pack('<' + str(len(master) + 1) + 's', master)})
+            headerRecord.addSubrecord({'tag':'MAST', 'data':pack('<#sx', master)})
             headerRecord.addSubrecord({'tag':'DATA', 'data':pack('<Q', size)})
 
         newRecords['TES3']['0'] = headerRecord
