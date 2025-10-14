@@ -663,11 +663,15 @@ def BMPToPlugin(mastersDict, bmpPath, pluginPath, noCells=False, keepSpec=False)
         for recordTag, recordDict in newRecords.items():
             recordCount += len(recordDict)
 
+        flags = 0
+        if os.path.splitext(pluginPath)[1].lower() == '.esm':
+            flags = 1
+        
         headerRecord = Record({
             'tag':'TES3',
             'flags':0,
             # Consider adding command-line option for setting version/author/description
-            'subrecords':[{'tag':'HEDR', 'data':pack('<fI32s256sI', version, 0, '', '', recordCount)}]
+            'subrecords':[{'tag':'HEDR', 'data':pack('<fI32s256sI', version, flags, '', '', recordCount)}]
         })
 
         for master in masters:
