@@ -3,6 +3,7 @@ import struct
 import os
 import sys
 import getopt
+from PIL import Image
 
 # Automatically convert i/o strings/bytes to bytes/strings
 # Allow variable string length
@@ -35,104 +36,6 @@ def unpack(*args):
         if isinstance(ret[i], bytes):
             ret[i] = ret[i].decode('ascii')
     return tuple(ret)
-
-# Return nearest multiple of pad >= length
-def padLength(length, pad):
-    return int(pad * math.ceil(length/pad))
-
-class ColorTable():
-
-    def getSize(self):
-        self.size = len(self.value) * 4
-
-    def to_bytes(self):
-        b = bytearray()
-        for color in self.value:
-            b += bytearray(color)
-        return b
-
-    def from_bytes(self, b):
-        v = []
-        for i in range(int(self.size/4)):
-            i *= 4
-            v.append(list(b[i:i+4]))
-        return v
-
-    def r(self, index):
-        return self.value[index][0]
-    def g(self, index):
-        return self.value[index][1]
-    def b(self, index):
-        return self.value[index][2]
-    def a(self, index):
-        return self.value[index][3]
-    def rgba(self, index):
-        return self.value[index]
-
-    def __init__(self, i):
-        if isinstance(i, (bytes, bytearray)):
-            self.size = len(i)
-            self.value = self.from_bytes(i)
-        else:
-            self.value = i
-            if not hasattr(self, 'size'):
-                self.getSize()
-
-# Keep this as bytes so we don't use a lot of memory
-class PixelArray():
-
-    def getSize(self):
-        self.size = self.height * self.padWidth
-
-    def to_bytes(self, v):
-        b = bytearray()
-        for row in v:
-            b += bytearray(row) + bytearray(self.padWidth - self.width)
-        return b
-
-    def from_bytes(self):
-        v = []
-        for i in range(self.height):
-            i *= self.padWidth
-            v.append(list(self.value[i:i + self.width]))
-        return v
-
-    def getRow(self, x, y, length):
-        if not length:
-            x = 0
-            length = self.width
-        baseRow = y * self.padWidth
-        baseColumn = baseRow + x
-        return self.value[baseColumn:baseColumn+length]
-
-    def setRow(self, x, y, b):
-        b = b[:self.width - x]
-        baseRow = y * self.padWidth
-        baseColumn = baseRow + x
-        self.value[baseColumn:baseColumn+len(b)] = b
-
-    def impose(self, pixelArray, x, y):
-        for h in range(pixelArray.height):
-            b = pixelArray.getRow(0, h, 0)
-            self.setRow(x, y + h, b)
-
-    def crop(self, x, y, width, height):
-        cropped = []
-        for h in range(height):
-            cropped.append(self.getRow(x, y + h, width))
-        return PixelArray(cropped, width, height, width)
-
-    def __init__(self, i, width, height, padWidth):
-        self.width = int(width)
-        self.height = int(height)
-        self.padWidth = int(padWidth)
-        if not isinstance(i, (bytes, bytearray)):
-            if not hasattr(self, 'size'):
-                self.getSize()
-            self.value = self.to_bytes(i)
-        else:
-            self.size = len(i)
-            self.value = i
 
 # Record dict structure:
 #{
@@ -302,121 +205,34 @@ class Record():
         self.setName()
 
 
-######## BMP/image handling ########
+######## Image handling ########
 
 
-heightPaletteMono = []
-for i in range(128, 256):
-    heightPaletteMono.append([i, i, i, 0])
-for i in range(128):
-    heightPaletteMono.append([i, i, i, 0])
-heightPaletteMono = ColorTable(heightPaletteMono)
+intPalette = []
+uintPalette = []
+for i in range(0, 256):
+    uintPalette += [i, i, i]
+    if i >= 128:
+        i -= 128
+    else:
+        i += 128
+    intPalette += [i, i, i]
 
-# Color palette for Morrowind's in-game map
-heightPaletteColor = ColorTable(bytearray([
-    0x21, 0x30, 0x42, 0xFF, 0x20, 0x2E, 0x40, 0xFF, 0x1F, 0x2D, 0x3E, 0xFF, 0x1E, 0x2B, 0x3C, 0xFF, 0x1D, 0x2A, 0x3A, 0xFF, 0x1C, 0x28, 0x38, 0xFF, 0x1B, 0x27, 0x36, 0xFF, 0x1A, 0x25, 0x34, 0xFF,
-    0x19, 0x24, 0x32, 0xFF, 0x18, 0x23, 0x30, 0xFF, 0x17, 0x21, 0x2E, 0xFF, 0x16, 0x20, 0x2C, 0xFF, 0x15, 0x1E, 0x2A, 0xFF, 0x14, 0x1D, 0x28, 0xFF, 0x14, 0x1D, 0x28, 0xFF, 0x13, 0x1D, 0x27, 0xFF,
-    0x13, 0x1D, 0x27, 0xFF, 0x13, 0x1C, 0x27, 0xFF, 0x13, 0x1C, 0x27, 0xFF, 0x13, 0x1C, 0x26, 0xFF, 0x13, 0x1C, 0x26, 0xFF, 0x13, 0x1C, 0x26, 0xFF, 0x13, 0x1B, 0x26, 0xFF, 0x12, 0x1B, 0x25, 0xFF,
-    0x12, 0x1B, 0x25, 0xFF, 0x12, 0x1B, 0x25, 0xFF, 0x12, 0x1B, 0x25, 0xFF, 0x12, 0x1B, 0x24, 0xFF, 0x12, 0x1A, 0x24, 0xFF, 0x12, 0x1A, 0x24, 0xFF, 0x12, 0x1A, 0x24, 0xFF, 0x11, 0x1A, 0x23, 0xFF,
-    0x11, 0x1A, 0x23, 0xFF, 0x11, 0x19, 0x23, 0xFF, 0x11, 0x19, 0x23, 0xFF, 0x11, 0x19, 0x22, 0xFF, 0x11, 0x19, 0x22, 0xFF, 0x11, 0x19, 0x22, 0xFF, 0x11, 0x19, 0x22, 0xFF, 0x10, 0x18, 0x21, 0xFF,
-    0x10, 0x18, 0x21, 0xFF, 0x10, 0x18, 0x21, 0xFF, 0x10, 0x18, 0x20, 0xFF, 0x10, 0x17, 0x20, 0xFF, 0x10, 0x17, 0x20, 0xFF, 0x10, 0x17, 0x1F, 0xFF, 0x0F, 0x17, 0x1F, 0xFF, 0x0F, 0x17, 0x1F, 0xFF,
-    0x0F, 0x16, 0x1E, 0xFF, 0x0F, 0x16, 0x1E, 0xFF, 0x0F, 0x16, 0x1E, 0xFF, 0x0F, 0x16, 0x1D, 0xFF, 0x0F, 0x15, 0x1D, 0xFF, 0x0F, 0x15, 0x1D, 0xFF, 0x0E, 0x15, 0x1C, 0xFF, 0x0E, 0x15, 0x1C, 0xFF,
-    0x0E, 0x15, 0x1C, 0xFF, 0x0E, 0x14, 0x1B, 0xFF, 0x0E, 0x14, 0x1B, 0xFF, 0x0E, 0x14, 0x1B, 0xFF, 0x0E, 0x14, 0x1B, 0xFF, 0x0D, 0x13, 0x1A, 0xFF, 0x0D, 0x13, 0x1A, 0xFF, 0x0D, 0x13, 0x1A, 0xFF,
-    0x0D, 0x13, 0x19, 0xFF, 0x0D, 0x13, 0x19, 0xFF, 0x0D, 0x12, 0x19, 0xFF, 0x0D, 0x12, 0x18, 0xFF, 0x0D, 0x12, 0x18, 0xFF, 0x0C, 0x12, 0x18, 0xFF, 0x0C, 0x11, 0x17, 0xFF, 0x0C, 0x11, 0x17, 0xFF,
-    0x0C, 0x11, 0x17, 0xFF, 0x0C, 0x11, 0x16, 0xFF, 0x0C, 0x11, 0x16, 0xFF, 0x0C, 0x10, 0x16, 0xFF, 0x0B, 0x10, 0x15, 0xFF, 0x0B, 0x10, 0x15, 0xFF, 0x0B, 0x10, 0x15, 0xFF, 0x0B, 0x0F, 0x14, 0xFF,
-    0x0B, 0x0F, 0x14, 0xFF, 0x0B, 0x0F, 0x14, 0xFF, 0x0B, 0x0F, 0x13, 0xFF, 0x0B, 0x0F, 0x13, 0xFF, 0x0A, 0x0E, 0x13, 0xFF, 0x0A, 0x0E, 0x12, 0xFF, 0x0A, 0x0E, 0x12, 0xFF, 0x0A, 0x0E, 0x12, 0xFF,
-    0x0A, 0x0D, 0x11, 0xFF, 0x0A, 0x0D, 0x11, 0xFF, 0x0A, 0x0D, 0x11, 0xFF, 0x09, 0x0D, 0x10, 0xFF, 0x09, 0x0D, 0x10, 0xFF, 0x09, 0x0C, 0x10, 0xFF, 0x09, 0x0C, 0x10, 0xFF, 0x09, 0x0C, 0x0F, 0xFF,
-    0x09, 0x0C, 0x0F, 0xFF, 0x09, 0x0B, 0x0F, 0xFF, 0x09, 0x0B, 0x0E, 0xFF, 0x08, 0x0B, 0x0E, 0xFF, 0x08, 0x0B, 0x0E, 0xFF, 0x08, 0x0B, 0x0D, 0xFF, 0x08, 0x0A, 0x0D, 0xFF, 0x08, 0x0A, 0x0D, 0xFF,
-    0x08, 0x0A, 0x0C, 0xFF, 0x08, 0x0A, 0x0C, 0xFF, 0x07, 0x09, 0x0C, 0xFF, 0x07, 0x09, 0x0B, 0xFF, 0x07, 0x09, 0x0B, 0xFF, 0x07, 0x09, 0x0B, 0xFF, 0x07, 0x09, 0x0A, 0xFF, 0x07, 0x08, 0x0A, 0xFF,
-    0x07, 0x08, 0x0A, 0xFF, 0x07, 0x08, 0x09, 0xFF, 0x06, 0x08, 0x09, 0xFF, 0x06, 0x07, 0x09, 0xFF, 0x06, 0x07, 0x08, 0xFF, 0x06, 0x07, 0x08, 0xFF, 0x06, 0x07, 0x08, 0xFF, 0x06, 0x07, 0x07, 0xFF,
-    0x06, 0x06, 0x07, 0xFF, 0x05, 0x06, 0x07, 0xFF, 0x05, 0x06, 0x06, 0xFF, 0x05, 0x06, 0x06, 0xFF, 0x05, 0x05, 0x06, 0xFF, 0x05, 0x05, 0x05, 0xFF, 0x05, 0x05, 0x05, 0xFF, 0x05, 0x05, 0x05, 0xFF,
-    0x21, 0x24, 0x18, 0xFF, 0x21, 0x24, 0x18, 0xFF, 0x21, 0x24, 0x18, 0xFF, 0x21, 0x24, 0x18, 0xFF, 0x21, 0x24, 0x18, 0xFF, 0x21, 0x24, 0x18, 0xFF, 0x21, 0x24, 0x18, 0xFF, 0x21, 0x25, 0x18, 0xFF,
-    0x22, 0x25, 0x18, 0xFF, 0x22, 0x25, 0x18, 0xFF, 0x22, 0x25, 0x19, 0xFF, 0x22, 0x25, 0x19, 0xFF, 0x22, 0x25, 0x19, 0xFF, 0x22, 0x26, 0x19, 0xFF, 0x22, 0x26, 0x19, 0xFF, 0x23, 0x26, 0x19, 0xFF,
-    0x23, 0x26, 0x19, 0xFF, 0x23, 0x26, 0x19, 0xFF, 0x23, 0x26, 0x19, 0xFF, 0x23, 0x26, 0x1A, 0xFF, 0x23, 0x27, 0x1A, 0xFF, 0x23, 0x27, 0x1A, 0xFF, 0x24, 0x27, 0x1A, 0xFF, 0x24, 0x27, 0x1A, 0xFF,
-    0x24, 0x27, 0x1A, 0xFF, 0x24, 0x27, 0x1A, 0xFF, 0x24, 0x28, 0x1A, 0xFF, 0x24, 0x28, 0x1A, 0xFF, 0x24, 0x28, 0x1B, 0xFF, 0x25, 0x28, 0x1B, 0xFF, 0x25, 0x28, 0x1B, 0xFF, 0x25, 0x28, 0x1B, 0xFF,
-    0x25, 0x29, 0x1B, 0xFF, 0x25, 0x29, 0x1B, 0xFF, 0x25, 0x29, 0x1B, 0xFF, 0x25, 0x29, 0x1B, 0xFF, 0x26, 0x29, 0x1B, 0xFF, 0x26, 0x29, 0x1C, 0xFF, 0x26, 0x29, 0x1C, 0xFF, 0x26, 0x2A, 0x1C, 0xFF,
-    0x26, 0x2A, 0x1C, 0xFF, 0x26, 0x2A, 0x1C, 0xFF, 0x26, 0x2A, 0x1C, 0xFF, 0x27, 0x2A, 0x1C, 0xFF, 0x27, 0x2A, 0x1C, 0xFF, 0x27, 0x2B, 0x1C, 0xFF, 0x27, 0x2B, 0x1D, 0xFF, 0x27, 0x2B, 0x1D, 0xFF,
-    0x27, 0x2B, 0x1D, 0xFF, 0x27, 0x2B, 0x1D, 0xFF, 0x28, 0x2B, 0x1D, 0xFF, 0x28, 0x2B, 0x1D, 0xFF, 0x28, 0x2C, 0x1D, 0xFF, 0x28, 0x2C, 0x1D, 0xFF, 0x28, 0x2C, 0x1D, 0xFF, 0x28, 0x2C, 0x1E, 0xFF,
-    0x28, 0x2C, 0x1E, 0xFF, 0x29, 0x2C, 0x1E, 0xFF, 0x29, 0x2D, 0x1E, 0xFF, 0x29, 0x2D, 0x1E, 0xFF, 0x29, 0x2D, 0x1E, 0xFF, 0x29, 0x2D, 0x1E, 0xFF, 0x29, 0x2D, 0x1E, 0xFF, 0x29, 0x2D, 0x1E, 0xFF,
-    0x2A, 0x2E, 0x1F, 0xFF, 0x2A, 0x2E, 0x1F, 0xFF, 0x2A, 0x2E, 0x1F, 0xFF, 0x2A, 0x2E, 0x1F, 0xFF, 0x2A, 0x2E, 0x1F, 0xFF, 0x2A, 0x2E, 0x1F, 0xFF, 0x2A, 0x2E, 0x1F, 0xFF, 0x2A, 0x2F, 0x1F, 0xFF,
-    0x2B, 0x2F, 0x1F, 0xFF, 0x2B, 0x2F, 0x1F, 0xFF, 0x2B, 0x2F, 0x20, 0xFF, 0x2B, 0x2F, 0x20, 0xFF, 0x2B, 0x2F, 0x20, 0xFF, 0x2B, 0x30, 0x20, 0xFF, 0x2B, 0x30, 0x20, 0xFF, 0x2C, 0x30, 0x20, 0xFF,
-    0x2C, 0x30, 0x20, 0xFF, 0x2C, 0x30, 0x20, 0xFF, 0x2C, 0x30, 0x20, 0xFF, 0x2C, 0x30, 0x21, 0xFF, 0x2C, 0x31, 0x21, 0xFF, 0x2C, 0x31, 0x21, 0xFF, 0x2D, 0x31, 0x21, 0xFF, 0x2D, 0x31, 0x21, 0xFF,
-    0x2D, 0x31, 0x21, 0xFF, 0x2D, 0x31, 0x21, 0xFF, 0x2D, 0x32, 0x21, 0xFF, 0x2D, 0x32, 0x21, 0xFF, 0x2D, 0x32, 0x22, 0xFF, 0x2E, 0x32, 0x22, 0xFF, 0x2E, 0x32, 0x22, 0xFF, 0x2E, 0x32, 0x22, 0xFF,
-    0x2E, 0x33, 0x22, 0xFF, 0x2E, 0x33, 0x22, 0xFF, 0x2E, 0x33, 0x22, 0xFF, 0x2E, 0x33, 0x22, 0xFF, 0x2F, 0x33, 0x22, 0xFF, 0x2F, 0x33, 0x23, 0xFF, 0x2F, 0x33, 0x23, 0xFF, 0x2F, 0x34, 0x23, 0xFF,
-    0x2F, 0x34, 0x23, 0xFF, 0x2F, 0x34, 0x23, 0xFF, 0x2F, 0x34, 0x23, 0xFF, 0x30, 0x34, 0x23, 0xFF, 0x30, 0x34, 0x23, 0xFF, 0x30, 0x35, 0x23, 0xFF, 0x30, 0x35, 0x24, 0xFF, 0x30, 0x35, 0x24, 0xFF,
-    0x30, 0x35, 0x24, 0xFF, 0x30, 0x35, 0x24, 0xFF, 0x31, 0x35, 0x24, 0xFF, 0x31, 0x35, 0x24, 0xFF, 0x31, 0x36, 0x24, 0xFF, 0x31, 0x36, 0x24, 0xFF, 0x31, 0x36, 0x24, 0xFF, 0x31, 0x36, 0x25, 0xFF,
-    0x31, 0x36, 0x25, 0xFF, 0x32, 0x36, 0x25, 0xFF, 0x32, 0x37, 0x25, 0xFF, 0x32, 0x37, 0x25, 0xFF, 0x32, 0x37, 0x25, 0xFF, 0x32, 0x37, 0x25, 0xFF, 0x32, 0x37, 0x25, 0xFF, 0x32, 0x37, 0x25, 0xFF
-]))
+def WNAMsFromImage(imgPath, coords):
+    red = None
+    try:
+        with Image.open(imgPath) as img:
+            img = img.convert('RGB').transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+            width, height = img.size
+            
+            if width % 9 > 0 or height % 9 > 0:
+                print('Image dimensions must be divisible by 9.')
+                return False
 
-baseBMPheader = {
-    'Signature':        {'format': '<2s', 'value': 'BM', 'error': 'Not a valid .BMP file.'},
-    'FileSize':         {'format': '<I', 'value': 0x04A2},
-    'Reserved':         {'format': '<I', 'value': 0x00},
-    'DataOffset':       {'format': '<I', 'value': 0x0436},
-    'InfoSize':         {'format': '<I', 'value': 0x28, 'error': 'Incompatible header.'},
-    'Width':            {'format': '<I', 'value': 0x09},
-    'Height':           {'format': '<I', 'value': 0x09},
-    'Planes':           {'format': '<H', 'value': 0x01, 'error': 'Too many/no planes.'},
-    'BitsPerPixel':     {'format': '<H', 'value': 0x08, 'error': 'Only 8bpp paletted images are supported.'},
-    'Compression':      {'format': '<I', 'value': 0x00, 'error': 'Compressed images aren\'t supported.'},
-    'ImageSize':        {'format': '<I', 'value': 0x6C},
-    'XpixelsPerM':      {'format': '<I', 'value': 0x0EC4},
-    'YpixelsPerM':      {'format': '<I', 'value': 0x0EC4},
-    'ColorsUsed':       {'format': '<I', 'value': 0x0100},
-    'ImportantColors':  {'format': '<I', 'value': 0x0100},
-}
-
-def parseBMPHeader(f):
-    offset = 0
-    header = {}
-    for itemName, item in baseBMPheader.items():
-        itemFormat = item['format']
-        default = item['value']
-        size = struct.calcsize(itemFormat)
-        itemBytes = f.read(size)
-        data, = unpack(itemFormat, itemBytes)
-
-        if data != default and 'error' in item:
-            print(header[item]['error'])
-            return False
-
-        header[itemName] = {'format':itemFormat, 'value':data}
-        offset += size
-    return header
-
-def WNAMsFromBMP(bmpPath, coords):
-    pixelArray = None
-    with open(bmpPath, mode='rb') as img:
-        header = parseBMPHeader(img)
-        if not header:
-            return False
-        
-        palette = ColorTable(img.read(header['ColorsUsed']['value'] * 4))
-        size = header['ImageSize']['value']
-        width = header['Width']['value']
-        height = header['Height']['value']
-        
-        if width % 9 > 0 or height % 9 > 0:
-            print('Image dimensions must be divisible by 9.')
-            return False
-        
-        padWidth = size / height
-        if size == 0:
-            # We'll assume that image editors pad rows to multiples of 4 bytes
-            padWidth = padLength(width, 4)
-            size = padWidth * height
-
-        pixelData = img.read(size)
-        b = bytearray()
-        # Image editors cannot be relied upon to preserve color tables
-        for pixel in pixelData:
-            red = palette.r(pixel)
-            if red >= 128:
-                red -= 128
-            else:
-                red += 128
-            b.append(red)
-        pixelArray = PixelArray(b, width, height, padWidth)
+            red = img.getchannel(0).point(lambda i: i - 128 if i >= 128 else i + 128)
+    except:
+        print('Could not open image.')
+        return False
     
     WNAMs = {}
 
@@ -426,33 +242,25 @@ def WNAMsFromBMP(bmpPath, coords):
     for x in range(cellWidth):
         for y in range(cellHeight):
             key = '{:d},{:d}'.format(coords[0]+x, coords[1]+y)
-            data = pixelArray.crop(x*9,y*9,9,9).value
+            region = (x*9, y*9, (x+1)*9, (y+1)*9)
+            data = bytes(red.crop(region).getdata())
             subrecord = Subrecord({'tag':'WNAM', 'data':data})
             WNAMs[key] = subrecord
 
     return WNAMs
 
-def BMPFromPixelArray(bmpPath, pixelArray, colored=False):
-    b = bytearray()
-    for itemName, item in baseBMPheader.items():
-        itemFormat = item['format']
-        value = item['value']
-        if itemName == 'FileSize':
-            value = 0x436 + pixelArray.height * pixelArray.padWidth
-        elif itemName == 'Width':
-            value = pixelArray.width
-        elif itemName == 'Height':
-            value = pixelArray.height
-        elif itemName == 'ImageSize':
-            value = pixelArray.height * pixelArray.padWidth
-        b += pack(itemFormat, value)
-    if colored:
-        b += heightPaletteColor.to_bytes()
-    else:
-        b += heightPaletteMono.to_bytes()
-    b += pixelArray.value
-    with open(bmpPath, mode='wb') as img:
-        img.write(b)
+def imageFromWNAMs(imgPath, width, height, WNAMs):
+    img = Image.new('P', (width, height), 128)
+    img.putpalette(intPalette)
+
+    for coords, WNAM in WNAMs.items():
+        coords = coords.split(',')
+        x, y = int(coords[0]) * 9, int(coords[1]) * 9
+        WNAM = Image.frombytes('P', (9, 9), WNAM.data)
+        bounds = (x, y, x+9, y+9)
+        img.paste(WNAM, bounds)
+
+    img.transpose(Image.Transpose.FLIP_TOP_BOTTOM).save(imgPath)
 
 
 ######## Plugin/record handling ########
@@ -523,7 +331,7 @@ def sanitizeLand(records):
 ######## Main mode functions ########
 
 
-def pluginsToBMP(pluginList, bmpDir, colored=False):
+def pluginsToImage(pluginList, imgDir):
     landRecords = recordsFromPlugins(pluginList, ['LAND'])['LAND']
     landRecords = sanitizeLand(landRecords)
     if len(landRecords) <= 0:
@@ -546,34 +354,28 @@ def pluginsToBMP(pluginList, bmpDir, colored=False):
     
     width = cellWidth * 9
     height = cellHeight * 9
-    padWidth = padLength(width, 4)
 
-    # Initialize image as seafloor value, which is -128
-    mapArray = (pack('<b', -128) * width + bytearray(padWidth-width)) * height
-    mapArray = PixelArray(mapArray, width, height, padWidth)
-    
-    for x in range(cellWidth):
-        worldX = x + left
-        for y in range(cellHeight):
-            worldY = y + bottom
-            key = str(worldX) + ',' + str(worldY)
-            b = None
-            if key in landRecords:
-                b = landRecords[key].getSubrecord('WNAM').data
-                cellArray = PixelArray(b, 9, 9, 9)
-                mapArray.impose(cellArray, x*9, y*9)
-    bmpName = '{:d},{:d}.bmp'.format(left, bottom)
-    bmpPath = os.path.join(bmpDir, bmpName)
-    BMPFromPixelArray(bmpPath, mapArray, colored)
-    return 'Converted {:d} WNAMs to BMP at "{}"'.format(len(landRecords), bmpPath)
+    WNAMs = {}
 
-def BMPToPlugin(mastersDict, bmpPath, pluginPath, noCells=False, keepSpec=False):
+    for coords, landRecord in landRecords.items():
+        coords = coords.split(',')
+        x = int(coords[0]) - left
+        y = int(coords[1]) - bottom
+        coords = '{:d},{:d}'.format(x, y)
+        WNAMs[coords] = landRecord.getSubrecord('WNAM')
+
+    imgName = '{:d},{:d}.png'.format(left, bottom)
+    imgPath = os.path.join(imgDir, imgName)
+    imageFromWNAMs(imgPath, width, height, WNAMs)
+    return 'Converted {:d} WNAMs to PNG at "{}"'.format(len(landRecords), imgPath)
+
+def imageToPlugin(mastersDict, imgPath, pluginPath, noCells=False, keepSpec=False):
     # Leaving these out is technically wrong but doesn't cause any problems
     if not keepSpec:
         defaultLAND.delSubrecord('VNML')
         defaultLAND.delSubrecord('VHGT')
         
-    baseCoords = os.path.splitext(os.path.basename(bmpPath))[0].split(',')
+    baseCoords = os.path.splitext(os.path.basename(imgPath))[0].split(',')
     x = None
     y = None
     try:
@@ -582,7 +384,7 @@ def BMPToPlugin(mastersDict, bmpPath, pluginPath, noCells=False, keepSpec=False)
     except:
         return 'The image isn\'t named according to a cell coordinate. [x,y]'
     
-    imageWNAMs = WNAMsFromBMP(bmpPath, (x,y))
+    imageWNAMs = WNAMsFromImage(imgPath, (x,y))
     
     oldRecords = recordsFromPlugins(mastersDict, ['TES3', 'LAND', 'LTEX'])
     newRecords = {'TES3':{}, 'LTEX':{}, 'LAND':{}, 'CELL':{}}
@@ -826,13 +628,12 @@ def MWPlugins(iniPath, esmOnly=False):
 def main(argv):
     print('')
     
-    response =    'Usage: WNAMtool.py extract -i <input plugin, openmw.cfg, or morrowind.ini path> -b [bmp output dir] [optional arguments]'
-    response += '\n                   repack  -i <input plugin, openmw.cfg, or morrowind.ini path> -b <bmp image path> -o [output plugin path] [optional arguments]'
+    response =    'Usage: WNAMtool.py extract -i <input plugin, openmw.cfg, or morrowind.ini path> -b [image output dir] [optional arguments]'
+    response += '\n                   repack  -i <input plugin, openmw.cfg, or morrowind.ini path> -b <image image path> -o [output plugin path] [optional arguments]'
     response += '\nOptional arguments:'
-    response += '\n       [--color]:    Applies to extracting; if set, the image will use Morrowind\'s map colors. Don\'t use this if the image will be used for repacking.'
-    response += '\n       [--nocells]:  Applies to repacking; if not set, CELL records will be created for corresponding LANDs if they don\'t already exist.'
-    response += '\n       [--esm]:      Applies to extracting and repacking; will only read from/output master files. Used for compatibility with unmodified Morrowind.exe.'
-    response += '\n       [--keepspec]: Applies to repacking; by default, VNML/VHGT are left out when possible, violating the plugin format. Set this to keep them in.'
+    response += '\n       --nocells     # Applies to repacking; if not set, CELL records will be created for corresponding LANDs if they don\'t already exist.'
+    response += '\n       --esm         # Applies to extracting and repacking; will only read from/output master files. Used for compatibility with unmodified Morrowind.exe.'
+    response += '\n       --keepspec    # Applies to repacking; by default, VNML/VHGT are left out when possible, violating the plugin format. Set this to keep them in.'
     response += '\n       Arguments with parameters in brackets [] are also optional.'
 
     opts, args = getopt.gnu_getopt(argv, 'i:b:o:', longopts=['color', 'nocells', 'esm', 'keepspec'])
@@ -862,14 +663,14 @@ def main(argv):
         contentFiles = MWPlugins(i[0], '--esm' in d)
     
     if d['mode'] == 'extract' and contentFiles:
-        response = pluginsToBMP(contentFiles, b[1], '--color' in d)
+        response = pluginsToImage(contentFiles, b[1])
         
     elif d['mode'] == 'repack' and contentFiles:
         for name, path in contentFiles.items():
             if path == o[0]:
                 del contentFiles[name]
                 break
-        if len(contentFiles) > 0 and b[3] == '.bmp':
+        if len(contentFiles) > 0:
             outputPath = 'WNAM_Falsified.esp'
             if '--esm' in d:
                 outputPath = 'WNAM_Falsified.esm'
@@ -877,7 +678,7 @@ def main(argv):
                 outputPath = o[0]
             elif o[0]:
                 outputPath = os.path.join(o[1], outputPath)
-            response = BMPToPlugin(contentFiles, b[0], outputPath, '--nocells' in d, '--keepspec' in d)
+            response = imageToPlugin(contentFiles, b[0], outputPath, '--nocells' in d, '--keepspec' in d)
             
     print(response)
 
