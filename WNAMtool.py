@@ -218,18 +218,94 @@ for i in range(0, 256):
         i += 128
     intPalette += [i, i, i]
 
-def WNAMsFromImage(imgPath, coords):
-    red = None
+def LUTToTerrain(lutPath):
+    waterColors = []
+    landColors = []
+    try:
+        with Image.open(lutPath) as lut:
+            if lut.size != (256, 1):
+                print('LUT does not have the correct dimensions. (256x1)')
+                return False
+            lut = lut.convert('RGB')
+            pixels = lut.load()
+            for i in range(128, 256):
+                landColors.append(pixels[i, 0])
+            for i in range(128):
+                waterColors.append(pixels[i, 0])
+            return (waterColors, landColors)
+    except:
+        print('Could not open LUT.')
+        return False
+
+def terrainToPalette(waterColors, landColors):
+    palette = []
+    for color in landColors:
+        palette += list(color)
+    palette += [0,0,0] * (128-len(landColors))
+    for color in waterColors:
+        palette += list(color)
+    palette += [0,0,0] * (128-len(waterColors))
+    return palette
+
+def WNAMsFromImage(imgPath, lutPath, coords, colored):
+    heightMap = None
     try:
         with Image.open(imgPath) as img:
-            img = img.convert('RGB').transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+            img = img.convert('RGBA').transpose(Image.Transpose.FLIP_TOP_BOTTOM)
             width, height = img.size
-            
             if width % 9 > 0 or height % 9 > 0:
                 print('Image dimensions must be divisible by 9.')
                 return False
 
-            red = img.getchannel(0).point(lambda i: i - 128 if i >= 128 else i + 128)
+            if colored:
+                waterColors = [False]
+                landColors = []
+                if os.path.exists(lutPath):
+                    colors = LUTToTerrain(lutPath)
+                    if not colors:
+                        return False
+                    waterColors = colors[0]
+                    landColors = colors[1]
+                
+                heightMap = bytearray()
+                pixels = img.load()
+                for y in range(height):
+                    for x in range(width):
+                        pixel = pixels[x,y]
+                        alpha = pixel[3]
+                        color = pixel[0:3]
+                        value = 128
+                        if color in waterColors:
+                            value = waterColors.index(color) + 128
+                        elif color in landColors:
+                            value = landColors.index(color)
+                        elif not waterColors[0] and (alpha == 0 or (alpha < 255 and len(waterColors) >= 128)):
+                            waterColors[0] = color
+                        elif alpha < 255:
+                            if len(waterColors) < 128:
+                                value = len(waterColors) + 128
+                                waterColors.append(color)
+                        else:
+                            if len(landColors) >= 128:
+                                value = 0
+                            else:
+                                value = len(landColors)
+                                landColors.append(color)
+                        heightMap.append(value)
+
+                if not waterColors[0]:
+                    waterColors[0] = (0,0,0)
+
+                palette = terrainToPalette(waterColors, landColors)
+
+                if not os.path.exists(lutPath):
+                    lut = Image.frombytes('P', (256, 1), bytes(list(range(128, 256)) + list(range(0, 128))))
+                    lut.putpalette(palette)
+                    lut.convert('RGBA').save(lutPath, format='DDS')
+                heightMap = Image.frombytes('P', (width, height), heightMap)
+                heightMap.putpalette(palette)
+            else:
+                heightMap = img.getchannel(0).point(lambda i: i - 128 if i >= 128 else i + 128)
     except:
         print('Could not open image.')
         return False
@@ -243,15 +319,20 @@ def WNAMsFromImage(imgPath, coords):
         for y in range(cellHeight):
             key = '{:d},{:d}'.format(coords[0]+x, coords[1]+y)
             region = (x*9, y*9, (x+1)*9, (y+1)*9)
-            data = bytes(red.crop(region).getdata())
+            data = bytes(heightMap.crop(region).getdata())
             subrecord = Subrecord({'tag':'WNAM', 'data':data})
             WNAMs[key] = subrecord
 
     return WNAMs
 
-def imageFromWNAMs(imgPath, width, height, WNAMs):
+def imageFromWNAMs(imgPath, lutPath, width, height, WNAMs):
     img = Image.new('P', (width, height), 128)
-    img.putpalette(intPalette)
+    palette = intPalette
+    if os.path.exists(lutPath):
+        colors = LUTToTerrain(lutPath)
+        if colors:
+            palette = terrainToPalette(*colors)
+    img.putpalette(palette)
 
     for coords, WNAM in WNAMs.items():
         coords = coords.split(',')
@@ -331,7 +412,7 @@ def sanitizeLand(records):
 ######## Main mode functions ########
 
 
-def pluginsToImage(pluginList, imgDir):
+def pluginsToImage(pluginList, imgDir, lutPath):
     landRecords = recordsFromPlugins(pluginList, ['LAND'])['LAND']
     landRecords = sanitizeLand(landRecords)
     if len(landRecords) <= 0:
@@ -366,10 +447,10 @@ def pluginsToImage(pluginList, imgDir):
 
     imgName = '{:d},{:d}.png'.format(left, bottom)
     imgPath = os.path.join(imgDir, imgName)
-    imageFromWNAMs(imgPath, width, height, WNAMs)
+    imageFromWNAMs(imgPath, lutPath, width, height, WNAMs)
     return 'Converted {:d} WNAMs to PNG at "{}"'.format(len(landRecords), imgPath)
 
-def imageToPlugin(mastersDict, imgPath, pluginPath, noCells=False, keepSpec=False):
+def imageToPlugin(mastersDict, imgPath, pluginPath, lutPath, noCells=False, keepSpec=False, colored=False):
     # Leaving these out is technically wrong but doesn't cause any problems
     if not keepSpec:
         defaultLAND.delSubrecord('VNML')
@@ -384,7 +465,9 @@ def imageToPlugin(mastersDict, imgPath, pluginPath, noCells=False, keepSpec=Fals
     except:
         return 'The image isn\'t named according to a cell coordinate. [x,y]'
     
-    imageWNAMs = WNAMsFromImage(imgPath, (x,y))
+    imageWNAMs = WNAMsFromImage(imgPath, lutPath, (x,y), colored)
+    if not imageWNAMs:
+        return 'The image could not be processed.'
     
     oldRecords = recordsFromPlugins(mastersDict, ['TES3', 'LAND', 'LTEX'])
     newRecords = {'TES3':{}, 'LTEX':{}, 'LAND':{}, 'CELL':{}}
@@ -547,7 +630,7 @@ def verifyPath(path, fileShouldExist=True):
                 extension = splitName[1]
         else:
             path = False
-    return [path, directory, filename, extension]     
+    return [path, directory, filename, extension]   
 
 def openMWPlugins(cfgpath, esmOnly=False):
     dataFolders = []
@@ -631,17 +714,20 @@ def main(argv):
     response =    'Usage: WNAMtool.py extract -i <input plugin, openmw.cfg, or morrowind.ini path> -b [image output dir] [optional arguments]'
     response += '\n                   repack  -i <input plugin, openmw.cfg, or morrowind.ini path> -b <image image path> -o [output plugin path] [optional arguments]'
     response += '\nOptional arguments:'
+    response += '\n       --color       # Applies to repacking; if set, WNAMS will be generated using a colored image instead of a greyscale heightmap.'
+    response += '\n       --lut <path>  # Applies to extracting and repacking; a LUT will be read from or written to the specified path depending on the mode.'
     response += '\n       --nocells     # Applies to repacking; if not set, CELL records will be created for corresponding LANDs if they don\'t already exist.'
     response += '\n       --esm         # Applies to extracting and repacking; will only read from/output master files. Used for compatibility with unmodified Morrowind.exe.'
     response += '\n       --keepspec    # Applies to repacking; by default, VNML/VHGT are left out when possible, violating the plugin format. Set this to keep them in.'
     response += '\n       Arguments with parameters in brackets [] are also optional.'
 
-    opts, args = getopt.gnu_getopt(argv, 'i:b:o:', longopts=['color', 'nocells', 'esm', 'keepspec'])
+    opts, args = getopt.gnu_getopt(argv, 'i:b:o:', longopts=['color', 'lut=', 'nocells', 'esm', 'keepspec'])
     d = {
         'mode':False,
         '-i':False,
         '-b':False,
-        '-o':False
+        '-o':False,
+        '--lut':False
     }
     for opt, arg in opts:
         d[opt] = arg
@@ -653,6 +739,7 @@ def main(argv):
     i = verifyPath(d['-i'], True)
     b = verifyPath(d['-b'], d['mode'] == 'repack')
     o = verifyPath(d['-o'], False)
+    lut = verifyPath(d['--lut'], True)
 
     contentFiles = None
     if i[3] in ['.esp', '.esm', '.omwaddon']:
@@ -663,7 +750,7 @@ def main(argv):
         contentFiles = MWPlugins(i[0], '--esm' in d)
     
     if d['mode'] == 'extract' and contentFiles:
-        response = pluginsToImage(contentFiles, b[1])
+        response = pluginsToImage(contentFiles, b[1], lut[0])
         
     elif d['mode'] == 'repack' and contentFiles:
         for name, path in contentFiles.items():
@@ -678,7 +765,7 @@ def main(argv):
                 outputPath = o[0]
             elif o[0]:
                 outputPath = os.path.join(o[1], outputPath)
-            response = imageToPlugin(contentFiles, b[0], outputPath, '--nocells' in d, '--keepspec' in d)
+            response = imageToPlugin(contentFiles, b[0], outputPath, lut[0] or 'omw_map_color_palette.dds', '--nocells' in d, '--keepspec' in d, '--color' in d)
             
     print(response)
 
