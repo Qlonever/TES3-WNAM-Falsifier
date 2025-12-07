@@ -168,7 +168,7 @@ class Record():
 
         return text
 
-    def __init__(self, i, tags=False):
+    def __init__(self, i, tags=[]):
         if not i:
             return
 
@@ -328,7 +328,7 @@ def WNAMsFromImage(imgPath, lutPath, coords, colored):
 def imageFromWNAMs(imgPath, lutPath, width, height, WNAMs):
     img = Image.new('P', (width, height), 128)
     palette = intPalette
-    if os.path.exists(lutPath):
+    if lutPath and os.path.exists(lutPath):
         colors = LUTToTerrain(lutPath)
         if colors:
             palette = terrainToPalette(*colors)
@@ -347,8 +347,10 @@ def imageFromWNAMs(imgPath, lutPath, width, height, WNAMs):
 ######## Plugin/record handling ########
         
 
-def recordsFromPlugins(pluginDict, recordTags=False):
+def recordsFromPlugins(pluginDict, recordTags=[]):
     records = {'TES3':{}}
+    for tag in recordTags:
+        records[tag] = {}
     for pluginName, pluginPath in pluginDict.items():
         with open(pluginPath, mode='rb') as f:
             header = Record(f)
@@ -367,8 +369,8 @@ def recordsFromPlugins(pluginDict, recordTags=False):
                     records[record.tag][key] = record
 
             print('Done.')
-
-    print('')
+    if pluginDict:
+        print('')
     return records
 
 # Takes records as dictionary:
@@ -711,22 +713,26 @@ def MWPlugins(iniPath, esmOnly=False):
 def main(argv):
     print('')
     
-    response =    'Usage: WNAMtool.py extract -i <input plugin, openmw.cfg, or morrowind.ini path> -b [image output dir] [optional arguments]'
-    response += '\n                   repack  -i <input plugin, openmw.cfg, or morrowind.ini path> -b <image image path> -o [output plugin path] [optional arguments]'
-    response += '\nOptional arguments:'
-    response += '\n       --color       # Applies to repacking; if set, WNAMS will be generated using a colored image instead of a greyscale heightmap.'
-    response += '\n       --lut <path>  # Applies to extracting and repacking; a LUT will be read from or written to the specified path depending on the mode.'
-    response += '\n       --nocells     # Applies to repacking; if not set, CELL records will be created for corresponding LANDs if they don\'t already exist.'
-    response += '\n       --esm         # Applies to extracting and repacking; will only read from/output master files. Used for compatibility with unmodified Morrowind.exe.'
-    response += '\n       --keepspec    # Applies to repacking; by default, VNML/VHGT are left out when possible, violating the plugin format. Set this to keep them in.'
-    response += '\n       Arguments with parameters in brackets [] are also optional.'
+    response =    'Usage: WNAMtool.py extract -i input plugin path> [--img <dir>] [options]'
+    response += '\n                   repack  --img <image path> [-i <input plugin path>] [-o <output plugin path>] [options]'
+    response += '\nOptions: '
+    response += '\n        --opt <args>      | Mode | Description'
+    response += '\n -------------------------------------------------------------------'
+    response += '\n         -i <path>        | E/R  | The path to a plugin with WNAMs to be extracted/overwritten, or a plugin list (Morrowind.ini/openmw.cfg)'
+    response += '\n         -o <path>        |  R   | The path to output a plugin to.'
+    response += '\n        --img <dir/path>  | E/R  | In extract/repack mode, a map image will be written to/read from the given dir/path.'
+    response += '\n        --lut <path>      | E/R  | A LUT will be read from or written to the specified path depending on the mode.'
+    response += '\n        --color           |  R   | If set, the input image will be treated as a colored map instead of a greyscale heightmap.'
+    response += '\n        --esm             | E/R  | If set, only master files will be read/generated. Used for compatibility with unmodified Morrowind.exe.'
+    response += '\n        --nocells         |  R   | If set, CELL records won\'t be generated for terrain squares that lack them.'
+    response += '\n        --keepspec        |  R   | If set, generated LAND records will include VNML/VHGT. This is almost never necessary.'
 
-    opts, args = getopt.gnu_getopt(argv, 'i:b:o:', longopts=['color', 'lut=', 'nocells', 'esm', 'keepspec'])
+    opts, args = getopt.gnu_getopt(argv, 'i:o:', longopts=['img=', 'lut=', 'color', 'nocells', 'esm', 'keepspec'])
     d = {
         'mode':False,
         '-i':False,
-        '-b':False,
         '-o':False,
+        '--img':False,
         '--lut':False
     }
     for opt, arg in opts:
@@ -737,12 +743,12 @@ def main(argv):
             d['mode'] = arg
 
     i = verifyPath(d['-i'], True)
-    b = verifyPath(d['-b'], d['mode'] == 'repack')
     o = verifyPath(d['-o'], False)
+    img = verifyPath(d['--img'], d['mode'] == 'repack')
     lut = verifyPath(d['--lut'], True)
 
-    contentFiles = None
-    if i[3] in ['.esp', '.esm', '.omwaddon']:
+    contentFiles = {}
+    if i[3] in ['.esp', '.esm', '.omwaddon', '.omwgame']:
         contentFiles = {i[2].lower():i[0]}
     elif i[3] == '.cfg':
         contentFiles = openMWPlugins(i[0], '--esm' in d)
@@ -750,22 +756,22 @@ def main(argv):
         contentFiles = MWPlugins(i[0], '--esm' in d)
     
     if d['mode'] == 'extract' and contentFiles:
-        response = pluginsToImage(contentFiles, b[1], lut[0])
+        response = pluginsToImage(contentFiles, img[1], lut[0])
         
-    elif d['mode'] == 'repack' and contentFiles:
+    elif d['mode'] == 'repack':
         for name, path in contentFiles.items():
             if path == o[0]:
                 del contentFiles[name]
                 break
-        if len(contentFiles) > 0:
+        if not (d['-i'] and len(contentFiles) == 0):
             outputPath = 'WNAM_Falsified.esp'
             if '--esm' in d:
                 outputPath = 'WNAM_Falsified.esm'
-            if o[3] in ['.esp', '.esm', '.omwaddon']:
+            if o[3] in ['.esp', '.esm', '.omwaddon', '.omwgame']:
                 outputPath = o[0]
             elif o[0]:
                 outputPath = os.path.join(o[1], outputPath)
-            response = imageToPlugin(contentFiles, b[0], outputPath, lut[0] or 'omw_map_color_palette.dds', '--nocells' in d, '--keepspec' in d, '--color' in d)
+            response = imageToPlugin(contentFiles, img[0], outputPath, lut[0] or 'omw_map_color_palette.dds', '--nocells' in d, '--keepspec' in d, '--color' in d)
             
     print(response)
 

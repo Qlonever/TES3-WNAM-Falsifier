@@ -5,28 +5,32 @@ This is a Python script for directly editing the 9x9 heightmaps (WNAM) of landsc
 [Pillow](https://pillow.readthedocs.io/en/stable/) must be installed in order to use this script.
 
 ```
-Usage: WNAMtool.py extract -i <input plugin, openmw.cfg, or morrowind.ini path> -b [image output dir] [optional arguments]
-                   repack  -i <input plugin, openmw.cfg, or morrowind.ini path> -b <image image path> -o [output plugin path] [optional arguments]
-Optional arguments:
-       --color       # Applies to repacking; if set, WNAMS will be generated using a colored image instead of a greyscale heightmap.
-       --lut <path>  # Applies to extracting and repacking; if a path is specified, a LUT will be read from or written to that location depending on the mode.
-       --nocells     # Applies to repacking; if not set, CELL records will be created for corresponding LANDs if they don't already exist.
-       --esm         # Applies to extracting and repacking; will only read from/output master files. Used for compatibility with unmodified Morrowind.exe.
-       --keepspec    # Applies to repacking; by default, VNML/VHGT are left out when possible, violating the plugin format. Set this to keep them in.
-       Arguments with parameters in brackets [] are also optional.
+Usage: WNAMtool.py extract -i input plugin path> [--img <dir>] [options]'
+                   repack  --img <image path> [-i <input plugin path>] [-o <output plugin path>] [options]'
+Options:
+        --opt <args>      | Mode | Description
+-------------------------------------------------------------------
+         -i <path>        | E/R  | The path to a plugin with WNAMs to be extracted/overwritten, or a plugin list (Morrowind.ini/openmw.cfg)
+         -o <path>        |  R   | The path to output a plugin to.
+        --img <dir/path>  | E/R  | In extract/repack mode, a map image will be written to/read from the given dir/path.
+        --lut <path>      | E/R  | A LUT will be read from or written to the specified path depending on the mode.
+        --color           |  R   | If set, the input image will be treated as a colored map instead of a greyscale heightmap.
+        --esm             | E/R  | If set, only master files will be read/generated. Used for compatibility with unmodified Morrowind.exe.'
+        --nocells         |  R   | If set, CELL records won\'t be generated for terrain squares that lack them.
+        --keepspec        |  R   | If set, generated LAND records will include VNML/VHGT. This is almost never necessary.
 ```
 
 ## Extracting
 You can extract the heightmaps for each landscape record in a given plugin or load order of plugins as a composite image.
 
-To do this, you need to provide the path of the plugin/load order of plugins you're extracting from.
+To do this, you need to provide the path of the plugin you're extracting from, or a Morrowind.ini/openmw.cfg file containing a list of plugins.
 
-The name of this image will determine its positioning on the global map when repacking, so you shouldn't change it.
+The name of the generated image will determine its positioning on the global map when repacking, so you shouldn't change it.
 
 ## Repacking
-You can convert an extracted image into a new plugin that will modify the heightmaps of changed cells.
+You can convert an image into a new plugin that will modify the heightmaps of changed cells.
 
-To do this, you need to provide the plugin(s) with heightmaps you want to overwrite and the path of the image.
+To do this, you need to provide the path of the image, as well as any plugin(s) with heightmaps you want to overwrite. The image should be named according to the coordinate of the bottom-leftmost cell it represents. (x,y)
 
 The base plugin(s) are needed because it is impossible to only change the heightmap with a plugin. Other things like actual land geometry, texturing, and vertex colors are included in the LAND record as well. Land records will only be included for cells that have actually been changed in the provided image. Any necessary land textures from the base plugins will be included as well.
 
